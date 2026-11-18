@@ -1,0 +1,78 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-obsidian: #07080c;
+  --color-charcoal: #0e1017;
+  --color-slateDark: #141720;
+  --color-gold: #d4af37;
+  --color-gold-light: #f3e5ab;
+  --color-crimson: #991b1b;
+  --color-crimson-dark: #7f1d1d;
+  --color-crimson-light: #ef4444;
+
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Cinzel", ui-serif, Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+body {
+  position: relative;
+  isolation: isolate;
+  min-height: 100vh;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(7, 8, 12, 0.78), rgba(7, 8, 12, 0.92)),
+    url("/assets/emblem.webp");
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: url("/assets/emblem.webp");
+  background-position: center;
+  background-size: min(80vw, 650px);
+  background-repeat: no-repeat;
+  opacity: 0.16;
+  filter: grayscale(10%) contrast(130%);
+}
+
+.gold-border {
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  box-shadow: 0 4px 25px -2px rgba(0, 0, 0, 0.8);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #07080c;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #d4af37;
+}
