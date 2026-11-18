@@ -46,9 +46,11 @@ export interface MissionStateEntry {
   status?: MissionStatus;
   completed?: boolean;
   gain?: number;
+  cashGain?: number;
   extra?: number;
   players?: string[];
   gearConsumed?: boolean;
+  usedGear?: Record<string, number>;
   loot?: Record<string, number>;
   lostWeapons?: LostWeaponRecord[];
 }

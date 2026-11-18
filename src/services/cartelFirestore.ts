@@ -76,6 +76,16 @@ function sanitizeMissionEntry(value: MissionStateEntry): MissionStateEntry {
       });
   }
 
+  const cleanUsedGear: Record<string, number> = {};
+  if (value.usedGear && typeof value.usedGear === 'object') {
+    Object.entries(value.usedGear)
+      .slice(0, 20)
+      .forEach(([k, q]) => {
+        const qty = Math.max(0, Math.floor(Number(q) || 0));
+        if (k && qty > 0) cleanUsedGear[k.slice(0, 64)] = qty;
+      });
+  }
+
   const cleanLostWeapons: LostWeaponRecord[] = Array.isArray(value.lostWeapons)
     ? value.lostWeapons
         .filter((w): w is LostWeaponRecord => !!w && typeof w === 'object' && typeof w.name === 'string')
@@ -93,11 +103,13 @@ function sanitizeMissionEntry(value: MissionStateEntry): MissionStateEntry {
     status: value.status || '',
     completed: Boolean(value.completed),
     gain: Math.max(0, Number(value.gain) || 0),
+    cashGain: Math.max(0, Number(value.cashGain) || 0),
     extra: Math.max(0, Number(value.extra) || 0),
     players: Array.isArray(value.players)
       ? value.players.filter((p): p is string => typeof p === 'string').slice(0, 30)
       : [],
-    gearConsumed: Boolean(value.gearConsumed),
+    gearConsumed: Boolean(value.gearConsumed) || Object.keys(cleanUsedGear).length > 0,
+    usedGear: cleanUsedGear,
     loot: cleanLoot,
     lostWeapons: cleanLostWeapons,
   };
@@ -587,6 +599,7 @@ export async function saveAllMissionEntriesWithSideEffects(
     inventoryPatch?: Record<string, number>;
     weapons?: WeaponsStock;
     rewardPatches?: Record<string, RewardStockEntry>;
+    treasuryMoneyPatch?: Partial<TreasuryMoney>;
   }
 ): Promise<void> {
   const path = `cartels/${CARTEL_ID}/state/missions`;
@@ -623,17 +636,32 @@ export async function saveAllMissionEntriesWithSideEffects(
     batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'inventory'), invUpdate);
   }
 
-  if (sideEffects?.rewardPatches && Object.keys(sideEffects.rewardPatches).length > 0) {
+  const hasRewards =
+    sideEffects?.rewardPatches && Object.keys(sideEffects.rewardPatches).length > 0;
+  const hasMoneyPatch =
+    sideEffects?.treasuryMoneyPatch &&
+    (sideEffects.treasuryMoneyPatch.legal !== undefined ||
+      sideEffects.treasuryMoneyPatch.illegal !== undefined);
+
+  if (hasRewards || hasMoneyPatch) {
     const treasUpdate: Record<string, unknown> = {
       updatedAt: serverTimestamp(),
       updatedBy: uid,
     };
-    Object.entries(sideEffects.rewardPatches).forEach(([k, val]) => {
-      treasUpdate[`rewards.${k}`] = {
-        qty: Math.max(0, Math.floor(Number(val.qty) || 0)),
-        val: Math.max(0, Number(val.val) || 0),
-      };
-    });
+    if (sideEffects?.rewardPatches) {
+      Object.entries(sideEffects.rewardPatches).forEach(([k, val]) => {
+        treasUpdate[`rewards.${k}`] = {
+          qty: Math.max(0, Math.floor(Number(val.qty) || 0)),
+          val: Math.max(0, Number(val.val) || 0),
+        };
+      });
+    }
+    if (sideEffects?.treasuryMoneyPatch?.legal !== undefined) {
+      treasUpdate.legal = Math.max(0, Number(sideEffects.treasuryMoneyPatch.legal) || 0);
+    }
+    if (sideEffects?.treasuryMoneyPatch?.illegal !== undefined) {
+      treasUpdate.illegal = Math.max(0, Number(sideEffects.treasuryMoneyPatch.illegal) || 0);
+    }
     batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'treasury'), treasUpdate);
   }
 

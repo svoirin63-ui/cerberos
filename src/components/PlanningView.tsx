@@ -1,13 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { DAY_NAMES, REWARD_ITEMS, WEEKLY_SCHEDULE } from '@/src/data/cartelData';
+import { DAY_NAMES, INVENTORY_ITEMS, REWARD_ITEMS, WEEKLY_SCHEDULE } from '@/src/data/cartelData';
 import type {
   HierarchyMember,
   InventoryStock,
   Mission,
+  MissionStateEntry,
   MissionStates,
-  MissionStatus,
-  RewardStocks,
-  WeaponsStock,
 } from '@/src/types/cartel';
 import {
   checkStockAvailability,
@@ -18,7 +16,6 @@ import {
   formatMoney,
   formatSigned,
   getMissionEntry,
-  getWeaponHolderName,
   isTodayName,
   missionFin,
   netClass,
@@ -27,18 +24,14 @@ import {
 interface PlanningViewProps {
   missionStates: MissionStates;
   inventoryStock: InventoryStock;
-  weaponsStock: WeaponsStock;
-  rewardStocks: RewardStocks;
   members: HierarchyMember[];
   readonly: boolean;
-  onSetMissionStatus: (id: string, status: Exclude<MissionStatus, ''>) => void;
-  onUpdateMissionGain: (id: string, value: number) => void;
-  onUpdateMissionExtra: (id: string, value: number) => void;
-  onToggleMissionPlayer: (id: string, playerId: string) => void;
-  onAdjustMissionLoot: (missionId: string, rewardKey: string, delta: number) => void;
-  onDeclareMissionWeaponLoss: (missionId: string, weaponId: string) => void;
-  onRevertMissionWeaponLoss: (missionId: string, lostIndex: number) => void;
-  onOpenMissionValidation: (mission: Mission, dayName: string) => void;
+  onOpenMissionValidation: (
+    mission: Mission,
+    dayName: string,
+    initialStatus: 'success' | 'fail'
+  ) => void;
+  onResetMission: (missionId: string) => void;
   onToggleWholeDay: (dayName: string) => void;
   onToggleAllWeek: () => void;
 }
@@ -46,18 +39,10 @@ interface PlanningViewProps {
 export const PlanningView: React.FC<PlanningViewProps> = ({
   missionStates,
   inventoryStock,
-  weaponsStock,
-  rewardStocks,
   members,
   readonly,
-  onSetMissionStatus,
-  onUpdateMissionGain,
-  onUpdateMissionExtra,
-  onToggleMissionPlayer,
-  onAdjustMissionLoot,
-  onDeclareMissionWeaponLoss,
-  onRevertMissionWeaponLoss,
   onOpenMissionValidation,
+  onResetMission,
   onToggleWholeDay,
   onToggleAllWeek,
 }) => {
@@ -111,260 +96,87 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
     });
   };
 
-  const sortedMembers = useMemo(
-    () =>
-      [...members].sort(
-        (a, b) => (a.order || 0) - (b.order || 0) || a.name.localeCompare(b.name)
-      ),
-    [members]
-  );
+  const memberNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    members.forEach((m) => map.set(m.id, m.name));
+    return map;
+  }, [members]);
 
-  const [selectedWeaponByMission, setSelectedWeaponByMission] = useState<
-    Record<string, string>
-  >({});
-
-  const stockedWeapons = useMemo(
-    () =>
-      Object.values(weaponsStock)
-        .filter((w) => w && (Number(w.qty) || 0) > 0)
-        .sort((a, b) => a.name.localeCompare(b.name, 'fr-FR')),
-    [weaponsStock]
-  );
-
-  const renderLootSelector = (missionId: string, lootMap: Record<string, number>) => {
-    const activeItems = REWARD_ITEMS.filter((item) => (lootMap[item.key] || 0) > 0);
-    if (readonly && activeItems.length === 0) return null;
-
-    return (
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] font-semibold text-zinc-400">
-            <span className="text-gold">💎</span> Objets récupérés (→ Inventaire, Trésorerie &amp; Gains) :
-          </span>
-          {activeItems.length > 0 && (
-            <span className="text-[10px] font-mono text-emerald-300 tabular-nums">
-              {activeItems.reduce((s, it) => s + (lootMap[it.key] || 0), 0)} objet(s)
-            </span>
-          )}
-        </div>
-        {readonly ? (
-          <div className="flex flex-wrap gap-1.5">
-            {activeItems.map((item) => {
-              const qty = lootMap[item.key] || 0;
-              return (
-                <span
-                  key={item.key}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-amber-500/15 text-amber-200 border border-amber-500/40 tabular-nums"
-                >
-                  {item.name} &times;{qty}
-                </span>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="flex flex-wrap gap-1.5">
-            {REWARD_ITEMS.map((item) => {
-              const qty = lootMap[item.key] || 0;
-              const unitVal =
-                rewardStocks[item.key]?.val !== undefined
-                  ? Number(rewardStocks[item.key].val)
-                  : item.defaultVal;
-              return (
-                <div
-                  key={item.key}
-                  className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] transition ${
-                    qty > 0
-                      ? 'bg-amber-500/15 border-amber-500/50 text-amber-200'
-                      : 'bg-zinc-950/85 border-zinc-800 text-zinc-400'
-                  }`}
-                >
-                  <span className="font-medium">{item.name}</span>
-                  <span className="font-mono text-[10px] text-zinc-500">
-                    ({unitVal}$)
-                  </span>
-                  {qty > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => onAdjustMissionLoot(missionId, item.key, -1)}
-                      className="w-4 h-4 rounded bg-zinc-800 hover:bg-zinc-700 text-white font-bold flex items-center justify-center cursor-pointer"
-                      title="Retirer 1"
-                    >
-                      -
-                    </button>
-                  )}
-                  {qty > 0 && (
-                    <span className="font-mono font-bold text-gold px-0.5 tabular-nums">
-                      {qty}
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => onAdjustMissionLoot(missionId, item.key, 1)}
-                    className="w-4 h-4 rounded bg-zinc-800 hover:bg-gold hover:text-obsidian text-zinc-200 font-bold flex items-center justify-center cursor-pointer"
-                    title="Ajouter 1"
-                  >
-                    +
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+  const renderValidatedSummaryBadges = (st: MissionStateEntry) => {
+    const usedGearEntries =
+      st.usedGear && typeof st.usedGear === 'object'
+        ? Object.entries(st.usedGear).filter(([, q]) => (Number(q) || 0) > 0)
+        : [];
+    const cashGainVal =
+      st.status !== 'fail' ? Math.max(0, Number(st.cashGain) || 0) : 0;
+    const lootItems = REWARD_ITEMS.filter(
+      (item) => st.loot && (Number(st.loot[item.key]) || 0) > 0
     );
-  };
+    const lostWeapons = Array.isArray(st.lostWeapons) ? st.lostWeapons : [];
+    const playerIds = Array.isArray(st.players) ? st.players : [];
+    const playerNames = playerIds
+      .map((id) => memberNameMap.get(id))
+      .filter((n): n is string => Boolean(n));
 
-  const renderWeaponLossSelector = (
-    missionId: string,
-    lostWeapons: NonNullable<ReturnType<typeof getMissionEntry>['lostWeapons']>,
-    highlightFail = false
-  ) => {
-    if (readonly && lostWeapons.length === 0) return null;
-    const chosenId =
-      selectedWeaponByMission[missionId] &&
-      stockedWeapons.some((w) => w.id === selectedWeaponByMission[missionId])
-        ? selectedWeaponByMission[missionId]
-        : stockedWeapons[0]?.id || '';
+    if (
+      usedGearEntries.length === 0 &&
+      !st.gearConsumed &&
+      cashGainVal <= 0 &&
+      lootItems.length === 0 &&
+      lostWeapons.length === 0 &&
+      playerNames.length === 0
+    ) {
+      return null;
+    }
 
     return (
-      <div
-        className={`space-y-1.5 ${
-          highlightFail
-            ? 'bg-red-950/25 border border-red-500/35 rounded-lg p-2'
-            : ''
-        }`}
-      >
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] font-semibold text-zinc-300">
-            <span className="text-red-400">🔫</span> Arme(s) perdue(s) (→ Débit Inventaire, Trésorerie &amp; Pertes) :
-          </span>
-          {lostWeapons.length > 0 && (
-            <span className="text-[10px] font-mono text-red-300 tabular-nums">
-              {lostWeapons.length} perdue(s)
-            </span>
-          )}
-        </div>
-
-        {lostWeapons.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {lostWeapons.map((lw, idx) => (
+      <div className="flex flex-wrap gap-1.5">
+        {usedGearEntries.length > 0 ? (
+          usedGearEntries.map(([gKey, qty]) => {
+            const gItem = INVENTORY_ITEMS.find((i) => i.key === gKey);
+            return (
               <span
-                key={`${lw.id}-${idx}`}
-                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] bg-red-950/60 border border-red-500/40 text-red-200 tabular-nums"
+                key={gKey}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30 tabular-nums"
               >
-                <span>
-                  {lw.name} ({lw.holderName}) · -{formatMoney(lw.value)}
-                </span>
-                {!readonly && (
-                  <button
-                    type="button"
-                    title="Annuler cette perte"
-                    onClick={() => onRevertMissionWeaponLoss(missionId, idx)}
-                    className="text-red-300 hover:text-white font-bold cursor-pointer"
-                  >
-                    &times;
-                  </button>
-                )}
+                📦 -{qty} {gItem?.name || gKey}
               </span>
-            ))}
-          </div>
-        )}
-
-        {!readonly && (
-          stockedWeapons.length > 0 ? (
-            <div className="flex items-center gap-1.5">
-              <select
-                value={chosenId}
-                onChange={(e) =>
-                  setSelectedWeaponByMission((prev) => ({
-                    ...prev,
-                    [missionId]: e.target.value,
-                  }))
-                }
-                className="flex-1 min-w-0 bg-zinc-950 border border-zinc-700 focus:border-red-400 rounded-lg px-2 py-1 text-[11px] text-zinc-200 focus:outline-none"
-              >
-                {stockedWeapons.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name} — {getWeaponHolderName(w.holderId, members)} ({formatMoney(w.value)}) [x{w.qty}]
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                disabled={!chosenId}
-                onClick={() => chosenId && onDeclareMissionWeaponLoss(missionId, chosenId)}
-                className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-crimson/30 hover:bg-crimson/50 text-red-200 border border-crimson-light/40 transition whitespace-nowrap cursor-pointer"
-              >
-                Perdue (-1)
-              </button>
-            </div>
-          ) : (
-            <p className="text-[11px] italic text-zinc-500">
-              Aucune arme enregistrée dans l&apos;Inventaire.
-            </p>
-          )
-        )}
-      </div>
-    );
-  };
-
-  const renderPlayerSelector = (missionId: string, selectedIds: string[]) => {
-    const selectedMembers = sortedMembers.filter((m) => selectedIds.includes(m.id));
-
-    return (
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] font-semibold text-zinc-400">
-            <span className="text-gold">👥</span> Joueurs participants :
+            );
+          })
+        ) : st.gearConsumed ? (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+            📦 -1 matériel débité
           </span>
-          <span className="text-[10px] font-mono tabular-nums text-zinc-400">
-            {selectedMembers.length > 0
-              ? `${selectedMembers.length} sélectionné${selectedMembers.length > 1 ? 's' : ''}`
-              : 'Aucun'}
+        ) : null}
+        {cashGainVal > 0 && (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-red-500/15 text-red-200 border border-red-500/35 tabular-nums">
+            💰 +{formatMoney(cashGainVal)} Argent Sale
           </span>
-        </div>
-
-        {readonly ? (
-          selectedMembers.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5">
-              {selectedMembers.map((member) => (
-                <span
-                  key={member.id}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-gold/15 text-gold-light border border-gold/40"
-                >
-                  ✓ {member.name}
-                </span>
-              ))}
-            </div>
-          ) : (
-            <p className="text-[11px] italic text-zinc-500">Aucun joueur renseigné</p>
-          )
-        ) : sortedMembers.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5">
-            {sortedMembers.map((member) => {
-              const isSelected = selectedIds.includes(member.id);
-              return (
-                <button
-                  key={member.id}
-                  type="button"
-                  onClick={() => onToggleMissionPlayer(missionId, member.id)}
-                  className={`px-2 py-1 rounded-md text-[11px] font-medium border transition cursor-pointer ${
-                    isSelected
-                      ? 'bg-gold/20 border-gold text-gold-light font-semibold shadow-sm'
-                      : 'bg-zinc-950/85 border-zinc-800 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200'
-                  }`}
-                >
-                  {isSelected ? '✓ ' : '+ '}
-                  {member.name}
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <p className="text-[11px] italic text-zinc-500">
-            Ajoutez des membres dans l&apos;onglet Hiérarchie pour les sélectionner ici.
-          </p>
         )}
+        {lootItems.map((item) => (
+          <span
+            key={item.key}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-emerald-500/15 text-emerald-200 border border-emerald-500/35 tabular-nums"
+          >
+            💎 {item.name} &times;{st.loot![item.key]}
+          </span>
+        ))}
+        {lostWeapons.map((lw, idx) => (
+          <span
+            key={`${lw.id}-${idx}`}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-red-950/60 text-red-200 border border-red-500/40 tabular-nums"
+          >
+            🔫 {lw.name} ({lw.holderName}) · -{formatMoney(lw.value)}
+          </span>
+        ))}
+        {playerNames.map((name) => (
+          <span
+            key={name}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-gold/15 text-gold-light border border-gold/35"
+          >
+            👥 {name}
+          </span>
+        ))}
       </div>
     );
   };
@@ -375,11 +187,7 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
     : WEEKLY_SCHEDULE;
 
   const renderSingleDayRows = (dayName: string, missions: Mission[]) => {
-    const cols = 'lg:grid-cols-[minmax(0,2.2fr)_85px_285px_125px_125px_105px]';
-    const inputCls = (active: boolean, color: string) =>
-      `w-full bg-zinc-950/90 border ${
-        active ? color : 'border-zinc-700/80 text-zinc-200'
-      } focus:border-gold rounded-lg pl-2 pr-6 py-1.5 text-right text-xs font-mono tabular-nums focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed`;
+    const cols = 'lg:grid-cols-[minmax(0,2.4fr)_90px_230px_110px_110px_110px]';
 
     return (
       <div className="p-3 sm:p-4">
@@ -390,14 +198,13 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
           <span className="text-right">Matériel</span>
           <span className="text-center">Statut</span>
           <span className="text-right">Gains</span>
-          <span className="text-right">Perte armes / autre</span>
+          <span className="text-right">Pertes</span>
           <span className="text-right">Résultat</span>
         </div>
         <div className="space-y-1.5">
           {missions.map((m) => {
             const st = getMissionEntry(missionStates, m.id);
             const f = missionFin(m, missionStates);
-            const selectedPlayers = Array.isArray(st.players) ? st.players : [];
             const hasStock = checkStockAvailability(m.gearKey, inventoryStock).available;
             const isTenMin = m.wait === '10 min';
             const rowClass = f.success
@@ -407,13 +214,9 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                 : hasStock
                   ? 'bg-charcoal/60 border-zinc-700/70'
                   : 'bg-zinc-950/40 border-zinc-800/60';
-            const gainVal = Number(st.gain) > 0 ? String(st.gain) : '';
-            const extraVal = Number(st.extra) > 0 ? String(st.extra) : '';
-            const gainDis = readonly || !f.success;
-            const extraDis = readonly || !f.done;
 
             const btnBase =
-              'flex-1 px-2 py-1.5 rounded-lg text-[11px] font-bold border transition disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap cursor-pointer';
+              'flex-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition whitespace-nowrap cursor-pointer';
             const okBtn =
               btnBase +
               (f.success
@@ -424,6 +227,8 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
               (f.fail
                 ? ' bg-red-600 text-white border-red-400'
                 : ' bg-zinc-900 text-red-300 border-red-500/40 hover:bg-red-500/15');
+
+            const badges = f.done ? renderValidatedSummaryBadges(st) : null;
 
             return (
               <div
@@ -436,6 +241,11 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                     {m.major && (
                       <span className="px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider rounded bg-gradient-to-r from-gold to-amber-300 text-obsidian">
                         Gros Coup
+                      </span>
+                    )}
+                    {f.done && (
+                      <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider rounded bg-gold/20 text-gold-light border border-gold/40">
+                        ✓ Validée
                       </span>
                     )}
                   </div>
@@ -464,81 +274,59 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                   </span>
                 </div>
 
-                <div className="flex items-center gap-1.5 flex-wrap">
+                <div className="flex items-center gap-1.5">
                   <button
                     type="button"
-                    onClick={() => onOpenMissionValidation(m, dayName)}
-                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition whitespace-nowrap cursor-pointer ${
-                      f.done
-                        ? 'bg-gold/20 text-gold-light border-gold/50 hover:bg-gold/30'
-                        : 'bg-gold hover:bg-gold-light text-obsidian border-gold shadow-sm'
-                    }`}
-                    title={f.done ? 'Modifier la validation' : 'Valider la mission'}
-                  >
-                    {f.done ? '✎ Modifier' : '📋 Valider'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={readonly}
-                    onClick={() => onSetMissionStatus(m.id, 'success')}
+                    onClick={() => onOpenMissionValidation(m, dayName, 'success')}
                     className={okBtn}
+                    title="Ouvrir le formulaire de validation (Réussie)"
                   >
                     ✅ Réussie
                   </button>
                   <button
                     type="button"
-                    disabled={readonly}
-                    onClick={() => onSetMissionStatus(m.id, 'fail')}
+                    onClick={() => onOpenMissionValidation(m, dayName, 'fail')}
                     className={koBtn}
+                    title="Ouvrir le formulaire de validation (Échouée)"
                   >
                     ❌ Échec
                   </button>
+                  {f.done && !readonly && (
+                    <button
+                      type="button"
+                      onClick={() => onResetMission(m.id)}
+                      title="Annuler la validation"
+                      className="px-2 py-1.5 rounded-lg text-[11px] font-bold bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-red-300 border border-zinc-700 transition cursor-pointer"
+                    >
+                      ↺
+                    </button>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between lg:justify-end gap-2">
                   <span className="lg:hidden text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
                     Gains
                   </span>
-                  <div className="relative w-32 lg:w-full">
-                    <input
-                      type="number"
-                      min="0"
-                      step="100"
-                      value={gainVal}
-                      placeholder={f.fail ? '—' : '0'}
-                      disabled={gainDis}
-                      onChange={(e) =>
-                        onUpdateMissionGain(m.id, Math.max(0, parseInt(e.target.value, 10) || 0))
-                      }
-                      className={inputCls(f.gain > 0, 'border-emerald-500/50 text-emerald-300')}
-                    />
-                    <span className="absolute right-2 top-1/2 -translate-y-1/2 font-mono text-xs text-zinc-500 pointer-events-none">
-                      $
-                    </span>
-                  </div>
+                  <span
+                    className={`font-mono tabular-nums text-xs font-bold ${
+                      f.gain > 0 ? 'text-emerald-300' : 'text-zinc-500'
+                    }`}
+                  >
+                    {f.success ? formatMoney(f.gain) : '—'}
+                  </span>
                 </div>
 
                 <div className="flex items-center justify-between lg:justify-end gap-2">
                   <span className="lg:hidden text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                    Perte armes / autre
+                    Pertes
                   </span>
-                  <div className="relative w-32 lg:w-full">
-                    <input
-                      type="number"
-                      min="0"
-                      step="100"
-                      value={extraVal}
-                      placeholder="0"
-                      disabled={extraDis}
-                      onChange={(e) =>
-                        onUpdateMissionExtra(m.id, Math.max(0, parseInt(e.target.value, 10) || 0))
-                      }
-                      className={inputCls(f.extra > 0, 'border-red-500/50 text-red-300')}
-                    />
-                    <span className="absolute right-2 top-1/2 -translate-y-1/2 font-mono text-xs text-zinc-500 pointer-events-none">
-                      $
-                    </span>
-                  </div>
+                  <span
+                    className={`font-mono tabular-nums text-xs font-bold ${
+                      f.extra > 0 ? 'text-red-300' : 'text-zinc-500'
+                    }`}
+                  >
+                    {f.done && f.extra > 0 ? '-' + formatMoney(f.extra) : '0 $'}
+                  </span>
                 </div>
 
                 <div className="flex items-center justify-between lg:justify-end gap-2">
@@ -554,15 +342,9 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                   </span>
                 </div>
 
-                {f.done && (
-                  <div className="lg:col-span-full pt-2 mt-1 border-t border-zinc-800/70 space-y-2.5">
-                    {f.success && renderLootSelector(m.id, st.loot || {})}
-                    {renderWeaponLossSelector(
-                      m.id,
-                      Array.isArray(st.lostWeapons) ? st.lostWeapons : [],
-                      f.fail
-                    )}
-                    {renderPlayerSelector(m.id, selectedPlayers)}
+                {badges && (
+                  <div className="lg:col-span-full pt-2 mt-1 border-t border-zinc-800/70">
+                    {badges}
                   </div>
                 )}
               </div>
@@ -626,7 +408,7 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
               Tout cocher / décocher
             </button>
             <p className="text-xs text-zinc-400 italic">
-              Règlement GTA RP : 5 min d&apos;attente (10 min gros coups).
+              Cliquez sur Réussie ou Échouée pour renseigner et valider la mission.
             </p>
           </div>
         )}
@@ -721,9 +503,6 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                       {dayObj.missions.map((mission) => {
                         const st = getMissionEntry(missionStates, mission.id);
                         const f = missionFin(mission, missionStates);
-                        const selectedPlayers = Array.isArray(st.players) ? st.players : [];
-                        const gainVal = Number(st.gain) > 0 ? String(st.gain) : '';
-                        const extraVal = Number(st.extra) > 0 ? String(st.extra) : '';
                         const isTenMin = mission.wait === '10 min';
                         const hasStock = checkStockAvailability(
                           mission.gearKey,
@@ -739,7 +518,7 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                               : 'bg-zinc-950/40 border-zinc-800/60 opacity-75';
 
                         const btnBase =
-                          'flex-1 px-2 py-1.5 rounded-lg text-[11px] font-bold border transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
+                          'flex-1 px-2 py-1.5 rounded-lg text-[11px] font-bold border transition cursor-pointer';
                         const okBtn =
                           btnBase +
                           (f.success
@@ -750,6 +529,8 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                           (f.fail
                             ? ' bg-red-600 text-white border-red-400'
                             : ' bg-zinc-900 text-red-300 border-red-500/40 hover:bg-red-500/15');
+
+                        const badges = f.done ? renderValidatedSummaryBadges(st) : null;
 
                         return (
                           <div
@@ -803,156 +584,85 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                               <span className="text-zinc-500">Matériel :</span> {mission.gearName}
                             </p>
 
-                            <div className="mt-2.5 space-y-1.5">
+                            <div className="mt-2.5 flex items-center gap-2">
                               <button
                                 type="button"
-                                onClick={() => onOpenMissionValidation(mission, dayObj.day)}
-                                className={`w-full px-3 py-2 rounded-lg text-xs font-bold border transition cursor-pointer flex items-center justify-center gap-1.5 ${
-                                  f.done
-                                    ? 'bg-gold/15 hover:bg-gold/25 text-gold-light border-gold/50'
-                                    : 'bg-gold hover:bg-gold-light text-obsidian border-gold shadow-md'
-                                }`}
+                                onClick={() =>
+                                  onOpenMissionValidation(mission, dayObj.day, 'success')
+                                }
+                                className={okBtn}
                               >
-                                {f.done
-                                  ? '✓ Mission validée · Modifier les détails'
-                                  : '✅ Valider la mission (Matériel, Objets, Armes)'}
+                                ✅ Réussie
                               </button>
-                              <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  disabled={readonly}
-                                  onClick={() => onSetMissionStatus(mission.id, 'success')}
-                                  className={okBtn}
-                                >
-                                  ✅ Réussie
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={readonly}
-                                  onClick={() => onSetMissionStatus(mission.id, 'fail')}
-                                  className={koBtn}
-                                >
-                                  ❌ Échouée
-                                </button>
-                              </div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onOpenMissionValidation(mission, dayObj.day, 'fail')
+                                }
+                                className={koBtn}
+                              >
+                                ❌ Échouée
+                              </button>
                             </div>
 
                             {f.done && (
                               <div className="mt-2.5 pt-2 border-t border-zinc-800/70 space-y-2">
-                                {f.success ? (
-                                  <div className="flex items-center justify-between gap-2">
-                                    <span className="text-[11px] font-semibold text-zinc-400">
-                                      <span className="text-emerald-400">💰</span> Gains récoltés :
-                                    </span>
-                                    <div className="relative w-32">
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        step="100"
-                                        value={gainVal}
-                                        placeholder="0"
-                                        disabled={readonly}
-                                        onChange={(e) =>
-                                          onUpdateMissionGain(
-                                            mission.id,
-                                            Math.max(0, parseInt(e.target.value, 10) || 0)
-                                          )
-                                        }
-                                        className={`w-full bg-zinc-950/90 border ${
-                                          f.gain > 0
-                                            ? 'border-emerald-500/50 text-emerald-300'
-                                            : 'border-zinc-700/80 text-zinc-200'
-                                        } focus:border-gold rounded-lg pl-2.5 pr-6 py-1 text-right text-xs font-mono tabular-nums focus:outline-none disabled:opacity-60`}
-                                      />
-                                      <span className="absolute right-2 top-1/2 -translate-y-1/2 font-mono text-xs text-zinc-500 pointer-events-none">
-                                        $
+                                <div className="flex items-center justify-between gap-2 text-xs tabular-nums">
+                                  <span className="text-zinc-400">
+                                    {f.success ? (
+                                      <>
+                                        Gains :{' '}
+                                        <strong className="font-mono text-emerald-300">
+                                          +{formatMoney(f.gain)}
+                                        </strong>
+                                      </>
+                                    ) : (
+                                      <span className="text-red-300 font-semibold">
+                                        Mission échouée
                                       </span>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="flex items-center justify-between gap-2">
-                                    <span className="text-[11px] font-semibold text-zinc-400">
-                                      <span className="text-red-400">💥</span> Mission échouée : aucun gain
-                                    </span>
-                                  </div>
-                                )}
-
-                                <div className="flex items-center justify-between gap-2">
-                                  <span className="text-[11px] text-zinc-400 flex items-center gap-1.5 flex-wrap">
-                                    <span>
-                                      <span className="text-amber-300">📦</span> Matériel utilisé :
-                                    </span>
-                                    {st.gearConsumed && (
-                                      <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-semibold">
-                                        -1 débité du stock
+                                    )}
+                                    {f.extra > 0 && (
+                                      <span className="ml-2">
+                                        · Pertes :{' '}
+                                        <strong className="font-mono text-red-300">
+                                          -{formatMoney(f.extra)}
+                                        </strong>
                                       </span>
                                     )}
                                   </span>
-                                  <span className="font-mono tabular-nums text-xs font-bold text-amber-300">
-                                    -{formatMoney(f.cost)}
-                                  </span>
-                                </div>
-
-                                <div className="flex items-center justify-between gap-2">
-                                  <span className="text-[11px] font-semibold text-zinc-400">
-                                    <span className="text-red-400">🔫</span> Perte armes / autre :
-                                  </span>
-                                  <div className="relative w-32">
-                                    <input
-                                      type="number"
-                                      min="0"
-                                      step="100"
-                                      value={extraVal}
-                                      placeholder="0"
-                                      disabled={readonly}
-                                      onChange={(e) =>
-                                        onUpdateMissionExtra(
-                                          mission.id,
-                                          Math.max(0, parseInt(e.target.value, 10) || 0)
-                                        )
-                                      }
-                                      className={`w-full bg-zinc-950/90 border ${
-                                        f.extra > 0
-                                          ? 'border-red-500/50 text-red-300'
-                                          : 'border-zinc-700/80 text-zinc-200'
-                                      } focus:border-gold rounded-lg pl-2.5 pr-6 py-1 text-right text-xs font-mono tabular-nums focus:outline-none disabled:opacity-60`}
-                                    />
-                                    <span className="absolute right-2 top-1/2 -translate-y-1/2 font-mono text-xs text-zinc-500 pointer-events-none">
-                                      $
-                                    </span>
-                                  </div>
-                                </div>
-
-                                {f.success && (
-                                  <div className="pt-1.5 border-t border-zinc-800/70">
-                                    {renderLootSelector(mission.id, st.loot || {})}
-                                  </div>
-                                )}
-
-                                <div className="pt-1.5 border-t border-zinc-800/70">
-                                  {renderWeaponLossSelector(
-                                    mission.id,
-                                    Array.isArray(st.lostWeapons) ? st.lostWeapons : [],
-                                    f.fail
-                                  )}
-                                </div>
-
-                                <div className="pt-1.5 border-t border-zinc-800/70">
-                                  {renderPlayerSelector(mission.id, selectedPlayers)}
-                                </div>
-
-                                <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-zinc-800/70">
-                                  <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
-                                    Résultat mission
-                                  </span>
                                   <span
-                                    className={`font-mono tabular-nums text-sm font-extrabold ${netClass(
-                                      f.net
-                                    )}`}
+                                    className={`font-mono font-extrabold ${netClass(f.net)}`}
                                   >
                                     {formatSigned(f.net)}
                                   </span>
                                 </div>
+
+                                {badges}
+
+                                {!readonly && (
+                                  <div className="flex items-center justify-end gap-2 pt-1">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        onOpenMissionValidation(
+                                          mission,
+                                          dayObj.day,
+                                          f.fail ? 'fail' : 'success'
+                                        )
+                                      }
+                                      className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-zinc-900 hover:bg-zinc-800 text-gold-light border border-gold/40 transition cursor-pointer"
+                                    >
+                                      ✎ Modifier
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => onResetMission(mission.id)}
+                                      className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-zinc-900 hover:bg-zinc-800 text-red-300 border border-red-500/30 transition cursor-pointer"
+                                    >
+                                      Annuler
+                                    </button>
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>

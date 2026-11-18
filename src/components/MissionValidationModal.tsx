@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { INVENTORY_ITEMS, REWARD_ITEMS } from '@/src/data/cartelData';
 import type {
   HierarchyMember,
@@ -15,7 +15,7 @@ import { formatMoney, getStatus, getWeaponHolderName } from '@/src/utils/finance
 export interface MissionValidationPayload {
   missionId: string;
   status: 'success' | 'fail';
-  consumeGear: boolean;
+  usedGear: Record<string, number>;
   loot: Record<string, number>;
   cashGain: number;
   lostWeapons: LostWeaponRecord[];
@@ -29,6 +29,7 @@ interface MissionValidationModalProps {
   open: boolean;
   mission: Mission | null;
   dayName: string;
+  initialStatus?: 'success' | 'fail';
   entry: MissionStateEntry;
   inventoryStock: InventoryStock;
   weaponsStock: WeaponsStock;
@@ -40,10 +41,33 @@ interface MissionValidationModalProps {
   onResetMission: (missionId: string) => void;
 }
 
+function getPreviousUsedGear(
+  entry: MissionStateEntry,
+  mission: Mission
+): Record<string, number> {
+  if (entry.usedGear && typeof entry.usedGear === 'object') {
+    const clean: Record<string, number> = {};
+    Object.entries(entry.usedGear).forEach(([k, q]) => {
+      const qty = Math.max(0, Math.floor(Number(q) || 0));
+      if (qty > 0) clean[k] = qty;
+    });
+    if (Object.keys(clean).length > 0) return clean;
+  }
+  if (
+    entry.gearConsumed &&
+    mission.gearKey !== 'none' &&
+    INVENTORY_ITEMS.some((i) => i.key === mission.gearKey)
+  ) {
+    return { [mission.gearKey]: 1 };
+  }
+  return {};
+}
+
 export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
   open,
   mission,
   dayName,
+  initialStatus,
   entry,
   inventoryStock,
   weaponsStock,
@@ -55,7 +79,8 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
   onResetMission,
 }) => {
   const [status, setStatus] = useState<'success' | 'fail'>('success');
-  const [consumeGear, setConsumeGear] = useState(true);
+  const [usedGear, setUsedGear] = useState<Record<string, number>>({});
+  const [showOtherGear, setShowOtherGear] = useState(false);
   const [loot, setLoot] = useState<Record<string, number>>({});
   const [cashGain, setCashGain] = useState<string>('');
   const [lostWeapons, setLostWeapons] = useState<LostWeaponRecord[]>([]);
@@ -63,19 +88,32 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
   const [cashLoss, setCashLoss] = useState<string>('');
   const [treasuryDebitAccount, setTreasuryDebitAccount] = useState<'none' | 'illegal' | 'legal'>('none');
   const [players, setPlayers] = useState<string[]>([]);
+  const initKeyRef = useRef<string>('');
 
   useEffect(() => {
-    if (!open || !mission) return;
+    if (!open || !mission) {
+      initKeyRef.current = '';
+      return;
+    }
+
+    const key = `${mission.id}:${initialStatus || ''}`;
+    if (initKeyRef.current === key) return;
+    initKeyRef.current = key;
 
     const currentStatus = getStatus(entry);
-    setStatus(currentStatus === 'fail' ? 'fail' : 'success');
+    setStatus(initialStatus || (currentStatus === 'fail' ? 'fail' : 'success'));
 
-    const hasTrackableGear =
+    const prevUsed = getPreviousUsedGear(entry, mission);
+    const hasMissionGear =
       mission.gearKey !== 'none' && INVENTORY_ITEMS.some((i) => i.key === mission.gearKey);
-    const currentGearStock = inventoryStock[mission.gearKey] || 0;
-    setConsumeGear(
-      hasTrackableGear && (Boolean(entry.gearConsumed) || currentGearStock > 0)
-    );
+    if (Object.keys(prevUsed).length > 0) {
+      setUsedGear(prevUsed);
+    } else if (hasMissionGear && (inventoryStock[mission.gearKey] || 0) > 0) {
+      setUsedGear({ [mission.gearKey]: 1 });
+    } else {
+      setUsedGear({});
+    }
+    setShowOtherGear(false);
 
     const initLoot: Record<string, number> = {};
     let initLootVal = 0;
@@ -96,7 +134,10 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
     setLoot(initLoot);
 
     const existingGain = Math.max(0, Number(entry.gain) || 0);
-    const initialCash = Math.max(0, existingGain - initLootVal);
+    const initialCash =
+      entry.cashGain !== undefined
+        ? Math.max(0, Number(entry.cashGain) || 0)
+        : Math.max(0, existingGain - initLootVal);
     setCashGain(initialCash > 0 ? String(initialCash) : '');
 
     const initLost = Array.isArray(entry.lostWeapons) ? [...entry.lostWeapons] : [];
@@ -107,7 +148,7 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
     setCashLoss(initialOtherLoss > 0 ? String(initialOtherLoss) : '');
     setTreasuryDebitAccount('none');
     setPlayers(Array.isArray(entry.players) ? [...entry.players] : []);
-  }, [open, mission, entry, inventoryStock, rewardStocks]);
+  }, [open, mission, initialStatus, entry, inventoryStock, rewardStocks]);
 
   useEffect(() => {
     if (!open) return;
@@ -165,10 +206,29 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
 
   if (!open || !mission) return null;
 
+  const prevUsedGear = getPreviousUsedGear(entry, mission);
   const gearItem = INVENTORY_ITEMS.find((i) => i.key === mission.gearKey);
-  const currentGearStock = inventoryStock[mission.gearKey] || 0;
-  const maxAvailableGear = currentGearStock + (entry.gearConsumed ? 1 : 0);
-  const gearWillBeDebited = Boolean(gearItem) && consumeGear && maxAvailableGear > 0;
+
+  const getMaxGearForKey = (k: string) =>
+    Math.max(0, Number(inventoryStock[k]) || 0) + Math.max(0, Number(prevUsedGear[k]) || 0);
+
+  const adjustGear = (k: string, delta: number) => {
+    const maxAllowed = getMaxGearForKey(k);
+    setUsedGear((prev) => {
+      const cur = Math.max(0, Number(prev[k]) || 0);
+      const nextQty = Math.max(0, Math.min(maxAllowed, cur + delta));
+      const copy = { ...prev };
+      if (nextQty === 0) delete copy[k];
+      else copy[k] = nextQty;
+      return copy;
+    });
+  };
+
+  const extraSelectedGearItems = INVENTORY_ITEMS.filter(
+    (item) =>
+      item.key !== mission.gearKey &&
+      ((usedGear[item.key] || 0) > 0 || (inventoryStock[item.key] || 0) > 0)
+  );
 
   const lootTotalVal =
     status === 'success'
@@ -183,6 +243,8 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
       : 0;
 
   const parsedCashGain = status === 'success' ? Math.max(0, Number(cashGain) || 0) : 0;
+  const prevCreditedCash = Math.max(0, Number(entry.cashGain) || 0);
+  const illegalCashDelta = parsedCashGain - prevCreditedCash;
   const totalMissionGain = lootTotalVal + parsedCashGain;
   const weaponsLossVal = lostWeapons.reduce((s, w) => s + Math.max(0, Number(w.value) || 0), 0);
   const parsedCashLoss = Math.max(0, Number(cashLoss) || 0);
@@ -232,12 +294,11 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const debitAmount =
-      treasuryDebitAccount !== 'none' ? parsedCashLoss : 0;
+    const debitAmount = treasuryDebitAccount !== 'none' ? parsedCashLoss : 0;
     onConfirm({
       missionId: mission.id,
       status,
-      consumeGear: gearWillBeDebited,
+      usedGear,
       loot: status === 'success' ? loot : {},
       cashGain: parsedCashGain,
       lostWeapons,
@@ -249,6 +310,68 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
   };
 
   const wasAlreadyDone = getStatus(entry) !== '';
+
+  const renderGearRow = (item: (typeof INVENTORY_ITEMS)[number]) => {
+    const qty = usedGear[item.key] || 0;
+    const prevQty = prevUsedGear[item.key] || 0;
+    const maxAvail = getMaxGearForKey(item.key);
+    const remainingAfter = Math.max(0, maxAvail - qty);
+
+    return (
+      <div
+        key={item.key}
+        className={`flex items-center justify-between gap-3 flex-wrap rounded-lg border px-3 py-2 text-xs ${
+          qty > 0
+            ? 'bg-amber-500/10 border-amber-500/40'
+            : 'bg-zinc-950/70 border-zinc-800'
+        }`}
+      >
+        <div className="min-w-0">
+          <div className="font-bold text-white flex items-center gap-1.5 flex-wrap">
+            <span>📦 {item.name}</span>
+            {prevQty > 0 && (
+              <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[10px] text-zinc-300 font-normal">
+                Déjà débité : {prevQty}
+              </span>
+            )}
+          </div>
+          <div className="text-[11px] text-zinc-400 tabular-nums mt-0.5">
+            Stock dispo :{' '}
+            <strong className={maxAvail > 0 ? 'text-emerald-300' : 'text-red-300'}>
+              {maxAvail}
+            </strong>
+            {qty > 0 && (
+              <span className="text-amber-300">
+                {' '}
+                → restera <strong>{remainingAfter}</strong> en stock
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            disabled={qty <= 0}
+            onClick={() => adjustGear(item.key, -1)}
+            className="w-7 h-7 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-35 text-white font-bold flex items-center justify-center cursor-pointer"
+          >
+            -
+          </button>
+          <span className="font-mono font-bold text-amber-300 w-6 text-center tabular-nums">
+            {qty}
+          </span>
+          <button
+            type="button"
+            disabled={qty >= maxAvail}
+            onClick={() => adjustGear(item.key, 1)}
+            className="w-7 h-7 rounded-lg bg-zinc-800 hover:bg-gold hover:text-obsidian disabled:opacity-35 text-white font-bold flex items-center justify-center cursor-pointer"
+          >
+            +
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div
@@ -314,45 +437,55 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
           </div>
         </div>
 
-        {/* 2. MATÉRIEL UTILISÉ */}
-        {gearItem && (
-          <div className="bg-obsidian/75 border border-zinc-800 rounded-xl p-3.5 flex items-center justify-between gap-3 flex-wrap">
-            <div>
-              <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                <span className="text-amber-300">📦</span> Matériel utilisé : {gearItem.name}
-              </div>
-              <div className="text-[11px] text-zinc-400 mt-0.5 tabular-nums">
-                Stock disponible :{' '}
-                <strong className={maxAvailableGear > 0 ? 'text-emerald-300' : 'text-red-300'}>
-                  {maxAvailableGear}
-                </strong>{' '}
-                · Coût comptable :{' '}
-                <strong className="text-amber-300">-{formatMoney(mission.cost)}</strong>
-              </div>
-            </div>
-            <label className="inline-flex items-center gap-2 text-xs font-semibold text-zinc-200 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={gearWillBeDebited}
-                disabled={maxAvailableGear <= 0}
-                onChange={(e) => setConsumeGear(e.target.checked)}
-                className="w-4 h-4 accent-amber-400 rounded cursor-pointer disabled:opacity-40"
-              />
-              <span>
-                {maxAvailableGear > 0
-                  ? 'Débiter 1 du stock Inventaire'
-                  : 'Stock à 0 (aucun débit stock)'}
-              </span>
-            </label>
+        {/* 2. MATÉRIEL UTILISÉ (DÉBIT INVENTAIRE) */}
+        <div className="bg-obsidian/75 border border-zinc-800 rounded-xl p-3.5 space-y-2.5">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <span className="text-xs font-bold uppercase tracking-wider text-amber-300">
+              📦 Matériel utilisé (→ Débit Inventaire)
+            </span>
+            {extraSelectedGearItems.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowOtherGear((v) => !v)}
+                className="text-[11px] font-semibold text-gold hover:text-gold-light underline underline-offset-4 cursor-pointer"
+              >
+                {showOtherGear
+                  ? 'Masquer les autres matériels'
+                  : '+ Débiter un autre matériel du stock'}
+              </button>
+            )}
           </div>
-        )}
+
+          {gearItem ? (
+            renderGearRow(gearItem)
+          ) : (
+            <p className="text-[11px] text-zinc-400">
+              Aucun pack obligatoire tarifé sur cette mission — tu peux quand même débiter un outil/pack ci-dessous si utilisé (ex: Outil de hacking).
+            </p>
+          )}
+
+          {(showOtherGear ||
+            (!gearItem && extraSelectedGearItems.length > 0) ||
+            extraSelectedGearItems.some((it) => (usedGear[it.key] || 0) > 0)) && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+              {extraSelectedGearItems
+                .filter(
+                  (it) =>
+                    showOtherGear ||
+                    !gearItem ||
+                    (usedGear[it.key] || 0) > 0
+                )
+                .map((item) => renderGearRow(item))}
+            </div>
+          )}
+        </div>
 
         {/* 3. ITEMS RÉCUPÉRÉS & GAINS (SI RÉUSSIE) */}
         {status === 'success' && (
           <div className="bg-emerald-950/15 border border-emerald-500/30 rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <span className="text-xs font-bold uppercase tracking-wider text-emerald-300">
-                💎 2. Objets récupérés (→ Inventaire &amp; Trésorerie)
+                💎 Objets récupérés (→ Inventaire &amp; Trésorerie)
               </span>
               <span className="text-xs font-mono font-bold text-emerald-300 tabular-nums">
                 Valeur objets : +{formatMoney(lootTotalVal)}
@@ -406,24 +539,43 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
               })}
             </div>
 
-            <div className="flex items-center justify-between gap-3 pt-2 border-t border-emerald-500/20 flex-wrap">
-              <label className="text-xs font-semibold text-zinc-300">
-                💵 Gains cash supplémentaires ($) :
-              </label>
-              <div className="relative w-40">
-                <input
-                  type="number"
-                  min="0"
-                  step="100"
-                  value={cashGain}
-                  onChange={(e) => setCashGain(e.target.value)}
-                  placeholder="0"
-                  className="w-full bg-zinc-950 border border-zinc-700 focus:border-emerald-400 rounded-lg pl-3 pr-7 py-1.5 text-right text-xs font-mono tabular-nums text-emerald-300 focus:outline-none"
-                />
-                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 font-mono text-xs text-zinc-500">
-                  $
-                </span>
+            <div className="pt-2 border-t border-emerald-500/20 space-y-1.5">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <label className="text-xs font-semibold text-zinc-200">
+                  💰 Gains en Argent Sale ($) <span className="text-emerald-300/90">(→ Trésorerie Argent Illégal)</span> :
+                </label>
+                <div className="relative w-40">
+                  <input
+                    type="number"
+                    min="0"
+                    step="100"
+                    value={cashGain}
+                    onChange={(e) => setCashGain(e.target.value)}
+                    placeholder="0"
+                    className="w-full bg-zinc-950 border border-zinc-700 focus:border-emerald-400 rounded-lg pl-3 pr-7 py-1.5 text-right text-xs font-mono tabular-nums text-emerald-300 focus:outline-none"
+                  />
+                  <span className="absolute right-2.5 top-1/2 -translate-y-1/2 font-mono text-xs text-zinc-500">
+                    $
+                  </span>
+                </div>
               </div>
+              {(parsedCashGain > 0 || prevCreditedCash > 0) && (
+                <div className="text-[11px] text-right font-mono tabular-nums">
+                  {illegalCashDelta > 0 ? (
+                    <span className="text-emerald-300">
+                      +{formatMoney(illegalCashDelta)} crédités dans Argent Illégal / Sale
+                    </span>
+                  ) : illegalCashDelta < 0 ? (
+                    <span className="text-amber-300">
+                      -{formatMoney(Math.abs(illegalCashDelta))} ajustés sur Argent Illégal / Sale
+                    </span>
+                  ) : (
+                    <span className="text-zinc-400">
+                      Déjà crédité en Argent Sale : {formatMoney(prevCreditedCash)}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -438,7 +590,7 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
         >
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <span className="text-xs font-bold uppercase tracking-wider text-red-300">
-              🔫 {status === 'success' ? '3.' : '2.'} Armes perdues &amp; Débit Trésorerie
+              🔫 Armes perdues &amp; Débit Trésorerie
             </span>
             {totalMissionExtra > 0 && (
               <span className="text-xs font-mono font-bold text-red-300 tabular-nums">

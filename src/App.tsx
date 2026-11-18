@@ -76,7 +76,6 @@ import {
   formatMoney,
   getMissionEntry,
   getStatus,
-  getWeaponHolderName,
   isoDate,
   isWeekStale,
   missionFin,
@@ -176,6 +175,7 @@ export default function App() {
   const [validatingMission, setValidatingMission] = useState<{
     mission: Mission;
     dayName: string;
+    initialStatus: 'success' | 'fail';
   } | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -357,17 +357,44 @@ export default function App() {
     const mission = WEEKLY_SCHEDULE.flatMap((d) => d.missions).find((m) => m.id === id);
 
     let nextGearConsumed = Boolean(cur.gearConsumed);
+    let nextUsedGear: Record<string, number> =
+      cur.usedGear && typeof cur.usedGear === 'object' ? { ...cur.usedGear } : {};
+    if (
+      Object.keys(nextUsedGear).length === 0 &&
+      cur.gearConsumed &&
+      mission &&
+      mission.gearKey !== 'none' &&
+      INVENTORY_ITEMS.some((i) => i.key === mission.gearKey)
+    ) {
+      nextUsedGear[mission.gearKey] = 1;
+    }
+
     let inventoryPatch: Record<string, number> | undefined;
-    if (mission && mission.gearKey !== 'none') {
-      if (prevStatus === '' && next !== '') {
-        const currentQty = inventoryStock[mission.gearKey] || 0;
-        if (currentQty > 0) {
-          const updatedQty = currentQty - 1;
-          inventoryPatch = { [mission.gearKey]: updatedQty };
-          nextGearConsumed = true;
-          setInventoryStock((prev) => ({ ...prev, [mission.gearKey]: updatedQty }));
-        }
-      } else if (prevStatus !== '' && next === '' && cur.gearConsumed) {
+    if (prevStatus === '' && next !== '' && mission && mission.gearKey !== 'none') {
+      const currentQty = inventoryStock[mission.gearKey] || 0;
+      if (currentQty > 0) {
+        const updatedQty = currentQty - 1;
+        inventoryPatch = { [mission.gearKey]: updatedQty };
+        nextGearConsumed = true;
+        nextUsedGear = { ...nextUsedGear, [mission.gearKey]: (nextUsedGear[mission.gearKey] || 0) + 1 };
+        setInventoryStock((prev) => ({ ...prev, [mission.gearKey]: updatedQty }));
+      }
+    } else if (prevStatus !== '' && next === '') {
+      const keysToRestore = Object.keys(nextUsedGear);
+      if (keysToRestore.length > 0) {
+        inventoryPatch = {};
+        const updatedStock = { ...inventoryStock };
+        keysToRestore.forEach((gKey) => {
+          const count = Math.max(0, Number(nextUsedGear[gKey]) || 0);
+          if (count <= 0) return;
+          const updatedQty = (updatedStock[gKey] || 0) + count;
+          updatedStock[gKey] = updatedQty;
+          inventoryPatch![gKey] = updatedQty;
+        });
+        setInventoryStock(updatedStock);
+        nextUsedGear = {};
+        nextGearConsumed = false;
+      } else if (cur.gearConsumed && mission && mission.gearKey !== 'none') {
         const updatedQty = (inventoryStock[mission.gearKey] || 0) + 1;
         inventoryPatch = { [mission.gearKey]: updatedQty };
         nextGearConsumed = false;
@@ -376,27 +403,39 @@ export default function App() {
     }
 
     let nextGain = Number(cur.gain) || 0;
+    let nextCashGain = Math.max(0, Number(cur.cashGain) || 0);
     let nextLoot = cur.loot ? { ...cur.loot } : {};
     let rewardPatches: Record<string, RewardStockEntry> | undefined;
-    if (prevStatus === 'success' && next !== 'success' && Object.keys(nextLoot).length > 0) {
-      rewardPatches = {};
-      const nextRewards = { ...rewardStocks };
-      Object.entries(nextLoot).forEach(([rKey, lQty]) => {
-        const count = Math.max(0, Number(lQty) || 0);
-        if (count <= 0) return;
-        const itemRef = REWARD_ITEMS.find((i) => i.key === rKey);
-        const existing = nextRewards[rKey] || { qty: 0, val: itemRef ? itemRef.defaultVal : 200 };
-        const unitVal = existing.val !== undefined ? Number(existing.val) : itemRef ? itemRef.defaultVal : 200;
-        const updatedEntry: RewardStockEntry = {
-          qty: Math.max(0, (Number(existing.qty) || 0) - count),
-          val: unitVal,
-        };
-        nextRewards[rKey] = updatedEntry;
-        rewardPatches![rKey] = updatedEntry;
-        nextGain = Math.max(0, nextGain - count * unitVal);
-      });
-      setRewardStocks(nextRewards);
-      nextLoot = {};
+    let resetTreasuryPatch: Partial<TreasuryMoney> | undefined;
+
+    if (prevStatus === 'success' && next !== 'success') {
+      if (Object.keys(nextLoot).length > 0) {
+        rewardPatches = {};
+        const nextRewards = { ...rewardStocks };
+        Object.entries(nextLoot).forEach(([rKey, lQty]) => {
+          const count = Math.max(0, Number(lQty) || 0);
+          if (count <= 0) return;
+          const itemRef = REWARD_ITEMS.find((i) => i.key === rKey);
+          const existing = nextRewards[rKey] || { qty: 0, val: itemRef ? itemRef.defaultVal : 200 };
+          const unitVal = existing.val !== undefined ? Number(existing.val) : itemRef ? itemRef.defaultVal : 200;
+          const updatedEntry: RewardStockEntry = {
+            qty: Math.max(0, (Number(existing.qty) || 0) - count),
+            val: unitVal,
+          };
+          nextRewards[rKey] = updatedEntry;
+          rewardPatches![rKey] = updatedEntry;
+          nextGain = Math.max(0, nextGain - count * unitVal);
+        });
+        setRewardStocks(nextRewards);
+        nextLoot = {};
+      }
+      if (nextCashGain > 0) {
+        const updatedIllegal = Math.max(0, (Number(treasuryMoney.illegal) || 0) - nextCashGain);
+        resetTreasuryPatch = { illegal: updatedIllegal };
+        setTreasuryMoney((prev) => ({ ...prev, illegal: updatedIllegal }));
+        nextGain = Math.max(0, nextGain - nextCashGain);
+        nextCashGain = 0;
+      }
     }
 
     let nextExtra = Number(cur.extra) || 0;
@@ -435,19 +474,22 @@ export default function App() {
       status: next,
       completed: next !== '',
       gain: nextGain,
+      cashGain: nextCashGain,
       extra: nextExtra,
       players: Array.isArray(cur.players) ? cur.players : [],
       gearConsumed: nextGearConsumed,
+      usedGear: nextUsedGear,
       loot: nextLoot,
       lostWeapons: nextLostWeapons,
     };
     setMissionStates((prev) => ({ ...prev, [id]: updatedEntry }));
 
-    if (inventoryPatch || rewardPatches || nextWeaponsArg !== undefined) {
+    if (inventoryPatch || rewardPatches || nextWeaponsArg !== undefined || resetTreasuryPatch) {
       void saveMissionWithSideEffects(authUser.uid, id, updatedEntry, {
         inventoryPatch,
         rewardPatches,
         weapons: nextWeaponsArg,
+        treasuryMoneyPatch: resetTreasuryPatch,
       }).catch((err) => setSyncError(err instanceof Error ? err : new Error(String(err))));
     } else {
       void saveMissionEntry(authUser.uid, id, updatedEntry).catch((err) =>
@@ -465,204 +507,21 @@ export default function App() {
         showToast(`Mission validée (stock ${invItem?.name || 'matériel'} déjà à 0).`);
       }
     } else if (prevStatus !== '' && next === '' && inventoryPatch) {
-      showToast('Mission annulée — matériel remis en inventaire (+1).');
+      showToast('Mission annulée — matériel remis en inventaire.');
     }
   };
 
-  const handleUpdateMissionGain = (id: string, value: number) => {
-    if (readonly || !authUser) return;
-    const cur = getMissionEntry(missionStates, id);
-    const status = getStatus(cur) || 'success';
-    const updatedEntry: MissionStateEntry = {
-      ...cur,
-      status,
-      completed: true,
-      gain: value,
-      extra: Number(cur.extra) || 0,
-      players: Array.isArray(cur.players) ? cur.players : [],
-    };
-    setMissionStates((prev) => ({ ...prev, [id]: updatedEntry }));
-    void saveMissionEntry(authUser.uid, id, updatedEntry).catch((err) =>
-      setSyncError(err instanceof Error ? err : new Error(String(err)))
-    );
-  };
-
-  const handleUpdateMissionExtra = (id: string, value: number) => {
-    if (readonly || !authUser) return;
-    const cur = getMissionEntry(missionStates, id);
-    const status = getStatus(cur);
-    const updatedEntry: MissionStateEntry = {
-      ...cur,
-      status,
-      completed: status !== '',
-      gain: Number(cur.gain) || 0,
-      extra: value,
-      players: Array.isArray(cur.players) ? cur.players : [],
-    };
-    setMissionStates((prev) => ({ ...prev, [id]: updatedEntry }));
-    void saveMissionEntry(authUser.uid, id, updatedEntry).catch((err) =>
-      setSyncError(err instanceof Error ? err : new Error(String(err)))
-    );
-  };
-
-  const handleToggleMissionPlayer = (id: string, playerId: string) => {
-    if (readonly || !authUser) return;
-    const cur = getMissionEntry(missionStates, id);
-    const currentPlayers = Array.isArray(cur.players) ? cur.players : [];
-    const nextPlayers = currentPlayers.includes(playerId)
-      ? currentPlayers.filter((p) => p !== playerId)
-      : [...currentPlayers, playerId];
-    const status = getStatus(cur);
-    const updatedEntry: MissionStateEntry = {
-      ...cur,
-      status,
-      completed: status !== '',
-      gain: Number(cur.gain) || 0,
-      extra: Number(cur.extra) || 0,
-      players: nextPlayers,
-    };
-    setMissionStates((prev) => ({ ...prev, [id]: updatedEntry }));
-    void saveMissionEntry(authUser.uid, id, updatedEntry).catch((err) =>
-      setSyncError(err instanceof Error ? err : new Error(String(err)))
-    );
-  };
-
-  const handleAdjustMissionLoot = (
-    missionId: string,
-    rewardKey: string,
-    delta: number
+  const handleOpenMissionValidation = (
+    mission: Mission,
+    dayName: string,
+    initialStatus: 'success' | 'fail'
   ) => {
-    if (readonly || !authUser) return;
-    const itemRef = REWARD_ITEMS.find((i) => i.key === rewardKey);
-    if (!itemRef) return;
-    const cur = getMissionEntry(missionStates, missionId);
-    const currentLoot = { ...(cur.loot || {}) };
-    const curLootQty = Math.max(0, Number(currentLoot[rewardKey]) || 0);
-    const nextLootQty = Math.max(0, curLootQty + delta);
-    const actualDelta = nextLootQty - curLootQty;
-    if (actualDelta === 0) return;
-
-    if (nextLootQty === 0) delete currentLoot[rewardKey];
-    else currentLoot[rewardKey] = nextLootQty;
-
-    const existingReward = rewardStocks[rewardKey] || {
-      qty: 0,
-      val: itemRef.defaultVal,
-    };
-    const unitVal =
-      existingReward.val !== undefined
-        ? Math.max(0, Number(existingReward.val) || 0)
-        : itemRef.defaultVal;
-    const nextRewardEntry: RewardStockEntry = {
-      qty: Math.max(0, (Number(existingReward.qty) || 0) + actualDelta),
-      val: unitVal,
-    };
-
-    const nextGain = Math.max(0, (Number(cur.gain) || 0) + actualDelta * unitVal);
-    const status = getStatus(cur) || 'success';
-    const updatedEntry: MissionStateEntry = {
-      ...cur,
-      status,
-      completed: true,
-      gain: nextGain,
-      loot: currentLoot,
-    };
-
-    setMissionStates((prev) => ({ ...prev, [missionId]: updatedEntry }));
-    setRewardStocks((prev) => ({ ...prev, [rewardKey]: nextRewardEntry }));
-    void saveMissionWithSideEffects(authUser.uid, missionId, updatedEntry, {
-      rewardPatches: { [rewardKey]: nextRewardEntry },
-    }).catch((err) => setSyncError(err instanceof Error ? err : new Error(String(err))));
-  };
-
-  const handleDeclareMissionWeaponLoss = (missionId: string, weaponId: string) => {
-    if (readonly || !authUser) return;
-    const weapon = weaponsStock[weaponId];
-    if (!weapon || (Number(weapon.qty) || 0) <= 0) return;
-
-    const cur = getMissionEntry(missionStates, missionId);
-    const holderName = getWeaponHolderName(weapon.holderId, hierMembers);
-    const weaponVal = Math.max(0, Number(weapon.value) || 0);
-    const nextWeapons = { ...weaponsStock };
-    if (weapon.qty <= 1) {
-      delete nextWeapons[weaponId];
-    } else {
-      nextWeapons[weaponId] = { ...weapon, qty: weapon.qty - 1 };
-    }
-
-    const lostRecord: LostWeaponRecord = {
-      id: weapon.id,
-      name: weapon.name,
-      value: weaponVal,
-      holderId: weapon.holderId || 'coffre',
-      holderName,
-    };
-    const nextLost = [...(Array.isArray(cur.lostWeapons) ? cur.lostWeapons : []), lostRecord];
-    const nextExtra = Math.max(0, (Number(cur.extra) || 0) + weaponVal);
-    const status = getStatus(cur) || 'fail';
-    const updatedEntry: MissionStateEntry = {
-      ...cur,
-      status,
-      completed: true,
-      extra: nextExtra,
-      lostWeapons: nextLost,
-    };
-
-    setWeaponsStock(nextWeapons);
-    setMissionStates((prev) => ({ ...prev, [missionId]: updatedEntry }));
-    void saveMissionWithSideEffects(authUser.uid, missionId, updatedEntry, {
-      weapons: nextWeapons,
-    }).catch((err) => setSyncError(err instanceof Error ? err : new Error(String(err))));
-    showToast(`${weapon.name} déclarée perdue (-1 en stock, +${formatMoney(weaponVal)}).`);
-  };
-
-  const handleRevertMissionWeaponLoss = (missionId: string, lostIndex: number) => {
-    if (readonly || !authUser) return;
-    const cur = getMissionEntry(missionStates, missionId);
-    const curLost = Array.isArray(cur.lostWeapons) ? cur.lostWeapons : [];
-    const target = curLost[lostIndex];
-    if (!target) return;
-
-    const nextLost = curLost.filter((_, idx) => idx !== lostIndex);
-    const nextExtra = Math.max(0, (Number(cur.extra) || 0) - (Number(target.value) || 0));
-    const nextWeapons = { ...weaponsStock };
-    const wId = target.id || 'w_' + Date.now().toString(36);
-    if (nextWeapons[wId]) {
-      nextWeapons[wId] = {
-        ...nextWeapons[wId],
-        qty: Math.max(1, (Number(nextWeapons[wId].qty) || 0) + 1),
-      };
-    } else {
-      nextWeapons[wId] = {
-        id: wId,
-        name: target.name,
-        value: Math.max(0, Number(target.value) || 0),
-        qty: 1,
-        holderId: target.holderId || 'coffre',
-        notes: '',
-      };
-    }
-
-    const updatedEntry: MissionStateEntry = {
-      ...cur,
-      extra: nextExtra,
-      lostWeapons: nextLost,
-    };
-    setWeaponsStock(nextWeapons);
-    setMissionStates((prev) => ({ ...prev, [missionId]: updatedEntry }));
-    void saveMissionWithSideEffects(authUser.uid, missionId, updatedEntry, {
-      weapons: nextWeapons,
-    }).catch((err) => setSyncError(err instanceof Error ? err : new Error(String(err))));
-    showToast(`Perte annulée : ${target.name} remise en inventaire.`);
-  };
-
-  const handleOpenMissionValidation = (mission: Mission, dayName: string) => {
     if (readonly) {
       setAuthModalOpen(true);
       showToast("Déverrouillez l'édition avec le code secret pour valider une mission.");
       return;
     }
-    setValidatingMission({ mission, dayName });
+    setValidatingMission({ mission, dayName, initialStatus });
   };
 
   const handleConfirmMissionValidation = (payload: MissionValidationPayload) => {
@@ -674,23 +533,58 @@ export default function App() {
 
     const cur = getMissionEntry(missionStates, payload.missionId);
 
-    // 1. Material stock diff
-    let nextGearConsumed = Boolean(cur.gearConsumed);
-    let inventoryPatch: Record<string, number> | undefined;
-    if (mission.gearKey !== 'none') {
-      const prevConsumed = Boolean(cur.gearConsumed);
-      const wantConsumed = payload.consumeGear;
-      const delta = (prevConsumed ? 1 : 0) - (wantConsumed ? 1 : 0);
-      if (delta !== 0) {
-        const curQty = inventoryStock[mission.gearKey] || 0;
-        const updatedQty = Math.max(0, curQty + delta);
-        inventoryPatch = { [mission.gearKey]: updatedQty };
-        nextGearConsumed = wantConsumed && (delta > 0 || curQty > 0);
-        setInventoryStock((prev) => ({ ...prev, [mission.gearKey]: updatedQty }));
-      } else {
-        nextGearConsumed = wantConsumed;
-      }
+    // 1. Material stock diff (supports any inventory items used on the mission)
+    const prevUsedGear: Record<string, number> = {};
+    if (cur.usedGear && typeof cur.usedGear === 'object') {
+      Object.entries(cur.usedGear).forEach(([k, q]) => {
+        const qty = Math.max(0, Math.floor(Number(q) || 0));
+        if (qty > 0) prevUsedGear[k] = qty;
+      });
     }
+    if (
+      Object.keys(prevUsedGear).length === 0 &&
+      cur.gearConsumed &&
+      mission.gearKey !== 'none' &&
+      INVENTORY_ITEMS.some((i) => i.key === mission.gearKey)
+    ) {
+      prevUsedGear[mission.gearKey] = 1;
+    }
+
+    const nextUsedGear: Record<string, number> = {};
+    const inventoryPatch: Record<string, number> = {};
+    const nextInventory = { ...inventoryStock };
+    const newlyDebitedLabels: string[] = [];
+    const allGearKeys = new Set([
+      ...Object.keys(prevUsedGear),
+      ...Object.keys(payload.usedGear || {}),
+    ]);
+
+    allGearKeys.forEach((gKey) => {
+      const oldQty = Math.max(0, Math.floor(Number(prevUsedGear[gKey]) || 0));
+      const wantQty = Math.max(0, Math.floor(Number(payload.usedGear[gKey]) || 0));
+      const curStock = Math.max(0, Math.floor(Number(nextInventory[gKey]) || 0));
+      const maxAllowed = curStock + oldQty;
+      const clampedNext = Math.min(wantQty, maxAllowed);
+      if (clampedNext > 0) {
+        nextUsedGear[gKey] = clampedNext;
+      }
+      const diff = clampedNext - oldQty;
+      if (diff !== 0) {
+        const updatedStockQty = Math.max(0, curStock - diff);
+        nextInventory[gKey] = updatedStockQty;
+        inventoryPatch[gKey] = updatedStockQty;
+        if (diff > 0) {
+          const gName = INVENTORY_ITEMS.find((i) => i.key === gKey)?.name || gKey;
+          newlyDebitedLabels.push(`-${diff} ${gName}`);
+        }
+      }
+    });
+
+    const hasInventoryPatch = Object.keys(inventoryPatch).length > 0;
+    if (hasInventoryPatch) {
+      setInventoryStock(nextInventory);
+    }
+    const nextGearConsumed = Object.keys(nextUsedGear).length > 0;
 
     // 2. Loot & Reward stock diff
     const prevLoot = cur.loot || {};
@@ -769,18 +663,45 @@ export default function App() {
       weaponsTouched = false;
     }
 
-    // 4. Optional treasury cash debit
-    let treasuryMoneyPatch: Partial<TreasuryMoney> | undefined;
+    // 4. Credit mission dirty cash gain to Argent Sale (illegal) & apply optional treasury cash debit
+    let nextLegal = Math.max(0, Number(treasuryMoney.legal) || 0);
+    let nextIllegal = Math.max(0, Number(treasuryMoney.illegal) || 0);
+    let legalTouched = false;
+    let illegalTouched = false;
+
+    const prevCashGain = Math.max(0, Number(cur.cashGain) || 0);
+    const nextCashGain =
+      payload.status === 'success' ? Math.max(0, Number(payload.cashGain) || 0) : 0;
+    const cashGainDiff = nextCashGain - prevCashGain;
+    if (cashGainDiff !== 0) {
+      nextIllegal = Math.max(0, nextIllegal + cashGainDiff);
+      illegalTouched = true;
+    }
+
     if (payload.treasuryDebitAccount !== 'none' && payload.treasuryDebitAmount > 0) {
-      const account = payload.treasuryDebitAccount;
-      const currentBalance = Math.max(0, Number(treasuryMoney[account]) || 0);
-      const updatedBalance = Math.max(0, currentBalance - payload.treasuryDebitAmount);
-      treasuryMoneyPatch = { [account]: updatedBalance };
-      setTreasuryMoney((prev) => ({ ...prev, [account]: updatedBalance }));
+      if (payload.treasuryDebitAccount === 'legal') {
+        nextLegal = Math.max(0, nextLegal - payload.treasuryDebitAmount);
+        legalTouched = true;
+      } else {
+        nextIllegal = Math.max(0, nextIllegal - payload.treasuryDebitAmount);
+        illegalTouched = true;
+      }
+    }
+
+    let treasuryMoneyPatch: Partial<TreasuryMoney> | undefined;
+    if (legalTouched || illegalTouched) {
+      treasuryMoneyPatch = {};
+      if (legalTouched) treasuryMoneyPatch.legal = nextLegal;
+      if (illegalTouched) treasuryMoneyPatch.illegal = nextIllegal;
+      setTreasuryMoney((prev) => ({
+        ...prev,
+        ...(legalTouched ? { legal: nextLegal } : {}),
+        ...(illegalTouched ? { illegal: nextIllegal } : {}),
+      }));
     }
 
     const weaponsLossVal = nextLost.reduce((s, w) => s + Math.max(0, Number(w.value) || 0), 0);
-    const nextGain = payload.status === 'success' ? lootValTotal + Math.max(0, payload.cashGain) : 0;
+    const nextGain = payload.status === 'success' ? lootValTotal + nextCashGain : 0;
     const nextExtra = weaponsLossVal + Math.max(0, payload.cashLoss);
 
     const updatedEntry: MissionStateEntry = {
@@ -788,9 +709,11 @@ export default function App() {
       status: payload.status,
       completed: true,
       gain: nextGain,
+      cashGain: nextCashGain,
       extra: nextExtra,
       players: payload.players,
       gearConsumed: nextGearConsumed,
+      usedGear: nextUsedGear,
       loot: nextLoot,
       lostWeapons: nextLost,
     };
@@ -799,14 +722,14 @@ export default function App() {
     setValidatingMission(null);
 
     const hasSideEffects =
-      Boolean(inventoryPatch) ||
+      hasInventoryPatch ||
       Object.keys(rewardPatches).length > 0 ||
       weaponsTouched ||
       Boolean(treasuryMoneyPatch);
 
     if (hasSideEffects) {
       void saveMissionWithSideEffects(authUser.uid, payload.missionId, updatedEntry, {
-        inventoryPatch,
+        inventoryPatch: hasInventoryPatch ? inventoryPatch : undefined,
         rewardPatches: Object.keys(rewardPatches).length > 0 ? rewardPatches : undefined,
         weapons: weaponsTouched ? nextWeapons : undefined,
         treasuryMoneyPatch,
@@ -817,8 +740,16 @@ export default function App() {
       );
     }
 
+    const gearSummary =
+      newlyDebitedLabels.length > 0 ? ` · Stock débité : ${newlyDebitedLabels.join(', ')}` : '';
+    const cashSummary =
+      cashGainDiff > 0
+        ? ` · Argent Sale : +${formatMoney(cashGainDiff)}`
+        : cashGainDiff < 0
+          ? ` · Argent Sale : -${formatMoney(Math.abs(cashGainDiff))}`
+          : '';
     showToast(
-      `Mission "${mission.name}" validée (${payload.status === 'success' ? 'Réussie' : 'Échouée'}) !`
+      `Mission "${mission.name}" validée (${payload.status === 'success' ? 'Réussie' : 'Échouée'})${gearSummary}${cashSummary} !`
     );
   };
 
@@ -841,6 +772,7 @@ export default function App() {
     const rewardPatches: Record<string, RewardStockEntry> = {};
     const nextWeapons = { ...weaponsStock };
     let weaponsTouched = false;
+    let illegalCashRollback = 0;
 
     missions.forEach((m) => {
       const cur = getMissionEntry(missionStates, m.id);
@@ -848,15 +780,38 @@ export default function App() {
       const status: MissionStatus = allDone ? '' : prevStatus || 'success';
 
       let nextGearConsumed = Boolean(cur.gearConsumed);
-      if (m.gearKey !== 'none') {
-        if (prevStatus === '' && status !== '') {
-          const curQty = nextInventory[m.gearKey] || 0;
-          if (curQty > 0) {
-            nextInventory[m.gearKey] = curQty - 1;
-            inventoryPatch[m.gearKey] = curQty - 1;
-            nextGearConsumed = true;
-          }
-        } else if (prevStatus !== '' && status === '' && cur.gearConsumed) {
+      let nextUsedGear: Record<string, number> =
+        cur.usedGear && typeof cur.usedGear === 'object' ? { ...cur.usedGear } : {};
+      if (
+        Object.keys(nextUsedGear).length === 0 &&
+        cur.gearConsumed &&
+        m.gearKey !== 'none' &&
+        INVENTORY_ITEMS.some((i) => i.key === m.gearKey)
+      ) {
+        nextUsedGear[m.gearKey] = 1;
+      }
+
+      if (prevStatus === '' && status !== '' && m.gearKey !== 'none') {
+        const curQty = nextInventory[m.gearKey] || 0;
+        if (curQty > 0) {
+          nextInventory[m.gearKey] = curQty - 1;
+          inventoryPatch[m.gearKey] = curQty - 1;
+          nextGearConsumed = true;
+          nextUsedGear = { ...nextUsedGear, [m.gearKey]: (nextUsedGear[m.gearKey] || 0) + 1 };
+        }
+      } else if (prevStatus !== '' && status === '') {
+        const keys = Object.keys(nextUsedGear);
+        if (keys.length > 0) {
+          keys.forEach((gKey) => {
+            const count = Math.max(0, Number(nextUsedGear[gKey]) || 0);
+            if (count <= 0) return;
+            const updatedQty = (nextInventory[gKey] || 0) + count;
+            nextInventory[gKey] = updatedQty;
+            inventoryPatch[gKey] = updatedQty;
+          });
+          nextUsedGear = {};
+          nextGearConsumed = false;
+        } else if (cur.gearConsumed && m.gearKey !== 'none') {
           const updatedQty = (nextInventory[m.gearKey] || 0) + 1;
           nextInventory[m.gearKey] = updatedQty;
           inventoryPatch[m.gearKey] = updatedQty;
@@ -865,23 +820,31 @@ export default function App() {
       }
 
       let nextGain = Number(cur.gain) || 0;
+      let nextCashGain = Math.max(0, Number(cur.cashGain) || 0);
       let nextLoot = cur.loot ? { ...cur.loot } : {};
-      if (prevStatus === 'success' && status !== 'success' && Object.keys(nextLoot).length > 0) {
-        Object.entries(nextLoot).forEach(([rKey, lQty]) => {
-          const count = Math.max(0, Number(lQty) || 0);
-          if (count <= 0) return;
-          const itemRef = REWARD_ITEMS.find((i) => i.key === rKey);
-          const existing = nextRewards[rKey] || { qty: 0, val: itemRef ? itemRef.defaultVal : 200 };
-          const unitVal = existing.val !== undefined ? Number(existing.val) : itemRef ? itemRef.defaultVal : 200;
-          const updatedEntry: RewardStockEntry = {
-            qty: Math.max(0, (Number(existing.qty) || 0) - count),
-            val: unitVal,
-          };
-          nextRewards[rKey] = updatedEntry;
-          rewardPatches[rKey] = updatedEntry;
-          nextGain = Math.max(0, nextGain - count * unitVal);
-        });
-        nextLoot = {};
+      if (prevStatus === 'success' && status !== 'success') {
+        if (Object.keys(nextLoot).length > 0) {
+          Object.entries(nextLoot).forEach(([rKey, lQty]) => {
+            const count = Math.max(0, Number(lQty) || 0);
+            if (count <= 0) return;
+            const itemRef = REWARD_ITEMS.find((i) => i.key === rKey);
+            const existing = nextRewards[rKey] || { qty: 0, val: itemRef ? itemRef.defaultVal : 200 };
+            const unitVal = existing.val !== undefined ? Number(existing.val) : itemRef ? itemRef.defaultVal : 200;
+            const updatedEntry: RewardStockEntry = {
+              qty: Math.max(0, (Number(existing.qty) || 0) - count),
+              val: unitVal,
+            };
+            nextRewards[rKey] = updatedEntry;
+            rewardPatches[rKey] = updatedEntry;
+            nextGain = Math.max(0, nextGain - count * unitVal);
+          });
+          nextLoot = {};
+        }
+        if (nextCashGain > 0) {
+          illegalCashRollback += nextCashGain;
+          nextGain = Math.max(0, nextGain - nextCashGain);
+          nextCashGain = 0;
+        }
       }
 
       let nextExtra = Number(cur.extra) || 0;
@@ -917,9 +880,11 @@ export default function App() {
         status,
         completed: status !== '',
         gain: nextGain,
+        cashGain: nextCashGain,
         extra: nextExtra,
         players: Array.isArray(cur.players) ? cur.players : [],
         gearConsumed: nextGearConsumed,
+        usedGear: nextUsedGear,
         loot: nextLoot,
         lostWeapons: nextLostWeapons,
       };
@@ -928,18 +893,28 @@ export default function App() {
     if (Object.keys(inventoryPatch).length > 0) setInventoryStock(nextInventory);
     if (Object.keys(rewardPatches).length > 0) setRewardStocks(nextRewards);
     if (weaponsTouched) setWeaponsStock(nextWeapons);
+
+    let bulkTreasuryPatch: Partial<TreasuryMoney> | undefined;
+    if (illegalCashRollback > 0) {
+      const updatedIllegal = Math.max(0, (Number(treasuryMoney.illegal) || 0) - illegalCashRollback);
+      bulkTreasuryPatch = { illegal: updatedIllegal };
+      setTreasuryMoney((prev) => ({ ...prev, illegal: updatedIllegal }));
+    }
+
     setMissionStates(nextStates);
 
     const hasSideEffects =
       Object.keys(inventoryPatch).length > 0 ||
       Object.keys(rewardPatches).length > 0 ||
-      weaponsTouched;
+      weaponsTouched ||
+      Boolean(bulkTreasuryPatch);
 
     if (hasSideEffects) {
       void saveAllMissionEntriesWithSideEffects(authUser.uid, week, extractEntriesRecord(nextStates), {
         inventoryPatch: Object.keys(inventoryPatch).length > 0 ? inventoryPatch : undefined,
         rewardPatches: Object.keys(rewardPatches).length > 0 ? rewardPatches : undefined,
         weapons: weaponsTouched ? nextWeapons : undefined,
+        treasuryMoneyPatch: bulkTreasuryPatch,
       }).catch((err) => setSyncError(err instanceof Error ? err : new Error(String(err))));
     } else {
       void saveAllMissionEntries(authUser.uid, week, extractEntriesRecord(nextStates)).catch((err) =>
@@ -1615,18 +1590,10 @@ export default function App() {
           <PlanningView
             missionStates={missionStates}
             inventoryStock={inventoryStock}
-            weaponsStock={weaponsStock}
-            rewardStocks={rewardStocks}
             members={hierMembers}
             readonly={readonly}
-            onSetMissionStatus={handleSetMissionStatus}
-            onUpdateMissionGain={handleUpdateMissionGain}
-            onUpdateMissionExtra={handleUpdateMissionExtra}
-            onToggleMissionPlayer={handleToggleMissionPlayer}
-            onAdjustMissionLoot={handleAdjustMissionLoot}
-            onDeclareMissionWeaponLoss={handleDeclareMissionWeaponLoss}
-            onRevertMissionWeaponLoss={handleRevertMissionWeaponLoss}
             onOpenMissionValidation={handleOpenMissionValidation}
+            onResetMission={handleResetMissionFromModal}
             onToggleWholeDay={handleToggleWholeDay}
             onToggleAllWeek={handleToggleAllWeek}
           />
@@ -1708,6 +1675,7 @@ export default function App() {
         open={Boolean(validatingMission)}
         mission={validatingMission?.mission || null}
         dayName={validatingMission?.dayName || ''}
+        initialStatus={validatingMission?.initialStatus}
         entry={
           validatingMission
             ? getMissionEntry(missionStates, validatingMission.mission.id)
