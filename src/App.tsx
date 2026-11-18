@@ -159,6 +159,7 @@ export default function App() {
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [resetModalOpen, setResetModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [, setDayTick] = useState(() => isoDate(new Date()));
   const toastTimerRef = useRef<number | null>(null);
 
@@ -290,6 +291,7 @@ export default function App() {
   });
 
   const handleGoogleSignIn = async () => {
+    setAuthError(null);
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (error) {
@@ -301,7 +303,22 @@ export default function App() {
         showToast('Connexion annulée.');
         return;
       }
-      showToast(`Erreur lors de la connexion Google${code ? ` (${code})` : ''}.`);
+      if (code === 'auth/unauthorized-domain') {
+        const host = window.location.hostname;
+        const msg = `Domaine non autorisé (${host}). Ajoutez "${host}" dans Firebase Console > Authentication > Settings > Domaines autorisés.`;
+        setAuthError(msg);
+        showToast('Domaine non autorisé pour la connexion Google.');
+        return;
+      }
+      if (code === 'auth/popup-blocked') {
+        const msg = 'La fenêtre pop-up Google a été bloquée par le navigateur. Autorisez les pop-ups pour ce site puis réessayez.';
+        setAuthError(msg);
+        showToast('Pop-up bloquée par le navigateur.');
+        return;
+      }
+      const msg = `Erreur lors de la connexion Google${code ? ` (${code})` : ''}.`;
+      setAuthError(msg);
+      showToast(msg);
     }
   };
 
@@ -699,6 +716,11 @@ export default function App() {
             <LogIn className="w-4 h-4" />
             Se connecter avec Google
           </button>
+          {authError && (
+            <div className="rounded-xl bg-red-950/60 border border-red-500/40 px-3.5 py-2.5 text-left text-xs text-red-200 leading-relaxed">
+              {authError}
+            </div>
+          )}
           <Toast message={toastMessage} />
         </div>
       </div>
