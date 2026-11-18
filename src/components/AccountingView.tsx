@@ -1,12 +1,13 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { HIER_UNITS, WEEKLY_SCHEDULE } from '@/src/data/cartelData';
-import type { HierarchyMember, MissionStates } from '@/src/types/cartel';
+import type { HierarchyMember, MissionStates, WeaponsStock } from '@/src/types/cartel';
 import {
   dayDate,
   fmtLong,
   formatMoney,
   formatSigned,
   getMissionEntry,
+  getWeaponHolderName,
   isTodayName,
   missionFin,
   netClass,
@@ -15,18 +16,34 @@ import {
 interface AccountingViewProps {
   missionStates: MissionStates;
   members: HierarchyMember[];
+  weaponsStock: WeaponsStock;
   weaponsLossAmount: number;
   readonly: boolean;
   onUpdateWeaponsLoss: (val: number) => void;
+  onLoseWeaponGlobal: (weaponId: string) => void;
 }
 
 export const AccountingView: React.FC<AccountingViewProps> = ({
   missionStates,
   members,
+  weaponsStock,
   weaponsLossAmount,
   readonly,
   onUpdateWeaponsLoss,
+  onLoseWeaponGlobal,
 }) => {
+  const [selectedWeaponId, setSelectedWeaponId] = useState('');
+  const stockedWeapons = useMemo(
+    () =>
+      Object.values(weaponsStock)
+        .filter((w) => w && (Number(w.qty) || 0) > 0)
+        .sort((a, b) => a.name.localeCompare(b.name, 'fr-FR')),
+    [weaponsStock]
+  );
+  const chosenWeaponId =
+    selectedWeaponId && stockedWeapons.some((w) => w.id === selectedWeaponId)
+      ? selectedWeaponId
+      : stockedWeapons[0]?.id || '';
   let totOk = 0;
   let totKo = 0;
   let totCost = 0;
@@ -125,32 +142,61 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
           </div>
         </div>
 
-        <div className="bg-obsidian/80 border border-zinc-800 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <h4 className="font-bold text-sm text-white flex items-center gap-2">
-              <span className="text-crimson-light">⚠️</span> Pertes Globales (Armes, Équipements, Autres)
-            </h4>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              Pertes hors missions (fusillades, amendes...). Pour une mission précise, utilise le champ « Perte armes / autre » directement sur la mission dans le Planning.
-            </p>
+        <div className="bg-obsidian/80 border border-zinc-800 rounded-xl p-4 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h4 className="font-bold text-sm text-white flex items-center gap-2">
+                <span className="text-crimson-light">⚠️</span> Pertes Globales (Armes, Équipements, Autres)
+              </h4>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                Pertes hors missions (fusillades, amendes...). Pour une mission précise, utilise le sélecteur d&apos;arme perdue directement sur la mission dans le Planning.
+              </p>
+            </div>
+            <div className="relative w-full sm:w-48 shrink-0">
+              <input
+                type="number"
+                min="0"
+                step="100"
+                value={weaponsLossAmount || 0}
+                disabled={readonly}
+                onChange={(e) =>
+                  onUpdateWeaponsLoss(Math.max(0, Number(e.target.value) || 0))
+                }
+                placeholder="0"
+                className="w-full bg-zinc-950 border border-zinc-700 focus:border-crimson-light rounded-xl pl-3 pr-7 py-2 text-right font-mono tabular-nums text-sm font-bold text-red-300 focus:outline-none disabled:opacity-60"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 font-mono text-sm text-zinc-500 pointer-events-none">
+                $
+              </span>
+            </div>
           </div>
-          <div className="relative w-full sm:w-48">
-            <input
-              type="number"
-              min="0"
-              step="100"
-              value={weaponsLossAmount || 0}
-              disabled={readonly}
-              onChange={(e) =>
-                onUpdateWeaponsLoss(Math.max(0, Number(e.target.value) || 0))
-              }
-              placeholder="0"
-              className="w-full bg-zinc-950 border border-zinc-700 focus:border-crimson-light rounded-xl pl-3 pr-7 py-2 text-right font-mono tabular-nums text-sm font-bold text-red-300 focus:outline-none disabled:opacity-60"
-            />
-            <span className="absolute right-3 top-1/2 -translate-y-1/2 font-mono text-sm text-zinc-500 pointer-events-none">
-              $
-            </span>
-          </div>
+
+          {!readonly && stockedWeapons.length > 0 && (
+            <div className="pt-3 border-t border-zinc-800/80 flex flex-col sm:flex-row sm:items-center gap-2">
+              <span className="text-[11px] font-semibold text-zinc-400 shrink-0">
+                🔫 Déclarer une arme perdue hors mission :
+              </span>
+              <select
+                value={chosenWeaponId}
+                onChange={(e) => setSelectedWeaponId(e.target.value)}
+                className="flex-1 min-w-0 bg-zinc-950 border border-zinc-700 focus:border-crimson-light rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none"
+              >
+                {stockedWeapons.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name} — {getWeaponHolderName(w.holderId, members)} ({formatMoney(w.value)}) [x{w.qty}]
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={!chosenWeaponId}
+                onClick={() => chosenWeaponId && onLoseWeaponGlobal(chosenWeaponId)}
+                className="px-3 py-1.5 rounded-lg text-xs font-bold bg-crimson/30 hover:bg-crimson/50 text-red-200 border border-crimson-light/40 transition whitespace-nowrap cursor-pointer"
+              >
+                Déclarer perdue (-1)
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="overflow-x-auto">

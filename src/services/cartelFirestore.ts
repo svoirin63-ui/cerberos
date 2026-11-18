@@ -6,6 +6,7 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
+  writeBatch,
 } from 'firebase/firestore';
 import { DEFAULT_SECRET_CODE, HIER_DEFAULTS } from '@/src/data/cartelData';
 import {
@@ -18,11 +19,14 @@ import {
 import type {
   HierarchyMember,
   InventoryStock,
+  LostWeaponRecord,
   MissionStateEntry,
   MissionStates,
   RewardStockEntry,
   RewardStocks,
   TreasuryMoney,
+  WeaponEntry,
+  WeaponsStock,
 } from '@/src/types/cartel';
 import { currentWeekStart, isoDate } from '@/src/utils/finance';
 
@@ -61,6 +65,44 @@ function sanitizeDisplayName(raw: string): string {
   return cleaned || 'Membre Cartel';
 }
 
+function sanitizeMissionEntry(value: MissionStateEntry): MissionStateEntry {
+  const cleanLoot: Record<string, number> = {};
+  if (value.loot && typeof value.loot === 'object') {
+    Object.entries(value.loot)
+      .slice(0, 30)
+      .forEach(([k, q]) => {
+        const qty = Math.max(0, Math.floor(Number(q) || 0));
+        if (k && qty > 0) cleanLoot[k.slice(0, 64)] = qty;
+      });
+  }
+
+  const cleanLostWeapons: LostWeaponRecord[] = Array.isArray(value.lostWeapons)
+    ? value.lostWeapons
+        .filter((w): w is LostWeaponRecord => !!w && typeof w === 'object' && typeof w.name === 'string')
+        .slice(0, 20)
+        .map((w) => ({
+          id: String(w.id || '').slice(0, 64),
+          name: String(w.name).trim().slice(0, 80),
+          value: Math.max(0, Number(w.value) || 0),
+          holderId: String(w.holderId || 'coffre').slice(0, 80),
+          holderName: String(w.holderName || 'Coffre Cartel').slice(0, 80),
+        }))
+    : [];
+
+  return {
+    status: value.status || '',
+    completed: Boolean(value.completed),
+    gain: Math.max(0, Number(value.gain) || 0),
+    extra: Math.max(0, Number(value.extra) || 0),
+    players: Array.isArray(value.players)
+      ? value.players.filter((p): p is string => typeof p === 'string').slice(0, 30)
+      : [],
+    gearConsumed: Boolean(value.gearConsumed),
+    loot: cleanLoot,
+    lostWeapons: cleanLostWeapons,
+  };
+}
+
 function splitMissionStates(ms: MissionStates): {
   week: string;
   entries: Record<string, MissionStateEntry>;
@@ -72,15 +114,7 @@ function splitMissionStates(ms: MissionStates): {
   const entries: Record<string, MissionStateEntry> = {};
   Object.entries(ms).forEach(([key, value]) => {
     if (key === '__week' || !value || typeof value !== 'object') return;
-    entries[key] = {
-      status: value.status || '',
-      completed: Boolean(value.completed),
-      gain: Math.max(0, Number(value.gain) || 0),
-      extra: Math.max(0, Number(value.extra) || 0),
-      players: Array.isArray(value.players)
-        ? value.players.filter((p): p is string => typeof p === 'string').slice(0, 30)
-        : [],
-    };
+    entries[key] = sanitizeMissionEntry(value);
   });
   return { week, entries };
 }
@@ -110,6 +144,33 @@ function membersMapToArray(
     (m) => m && typeof m === 'object' && typeof m.id === 'string' && typeof m.name === 'string'
   );
   return list.length > 0 ? list : HIER_DEFAULTS;
+}
+
+function sanitizeWeaponsMap(raw: unknown): WeaponsStock {
+  if (!raw || typeof raw !== 'object') return {};
+  const clean: WeaponsStock = {};
+  Object.entries(raw as Record<string, WeaponEntry>)
+    .slice(0, 150)
+    .forEach(([key, entry]) => {
+      if (!entry || typeof entry !== 'object') return;
+      const id = (typeof entry.id === 'string' ? entry.id : key)
+        .replace(/[^a-zA-Z0-9_-]/g, '')
+        .slice(0, 64);
+      const name = typeof entry.name === 'string' ? entry.name.trim().slice(0, 80) : '';
+      if (!id || !name) return;
+      clean[id] = {
+        id,
+        name,
+        value: Math.max(0, Number(entry.value) || 0),
+        qty: Math.max(1, Math.floor(Number(entry.qty) || 1)),
+        holderId:
+          typeof entry.holderId === 'string' && entry.holderId.trim()
+            ? entry.holderId.trim().slice(0, 80)
+            : 'coffre',
+        notes: typeof entry.notes === 'string' ? entry.notes.trim().slice(0, 160) : '',
+      };
+    });
+  return clean;
 }
 
 export async function bootstrapAndJoinCartel(
@@ -195,6 +256,7 @@ export async function bootstrapAndJoinCartel(
       try {
         await setDoc(inventoryRef, {
           stock: seed.inventoryStock || {},
+          weapons: {},
           updatedAt: serverTimestamp(),
           updatedBy: user.uid,
         });
@@ -281,6 +343,7 @@ export function subscribeCartelState(
   callbacks: {
     onMissions: (ms: MissionStates) => void;
     onInventory: (stock: InventoryStock) => void;
+    onWeapons: (weapons: WeaponsStock) => void;
     onTreasury: (data: {
       treasuryMoney: TreasuryMoney;
       rewardStocks: RewardStocks;
@@ -323,6 +386,7 @@ export function subscribeCartelState(
           ? (data.stock as InventoryStock)
           : {};
       callbacks.onInventory(stock);
+      callbacks.onWeapons(sanitizeWeaponsMap(data.weapons));
     },
     (error) => {
       try {
@@ -406,21 +470,87 @@ export async function saveMissionEntry(
   entry: MissionStateEntry
 ): Promise<void> {
   const path = `cartels/${CARTEL_ID}/state/missions`;
-  const cleanEntry: MissionStateEntry = {
-    status: entry.status || '',
-    completed: Boolean(entry.completed),
-    gain: Math.max(0, Number(entry.gain) || 0),
-    extra: Math.max(0, Number(entry.extra) || 0),
-    players: Array.isArray(entry.players)
-      ? entry.players.filter((p): p is string => typeof p === 'string').slice(0, 30)
-      : [],
-  };
+  const cleanEntry = sanitizeMissionEntry(entry);
   try {
     await updateDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'missions'), {
       [`entries.${missionId}`]: cleanEntry,
       updatedAt: serverTimestamp(),
       updatedBy: uid,
     });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function saveMissionWithSideEffects(
+  uid: string,
+  missionId: string,
+  entry: MissionStateEntry,
+  sideEffects?: {
+    inventoryPatch?: Record<string, number>;
+    weapons?: WeaponsStock;
+    rewardPatches?: Record<string, RewardStockEntry>;
+    treasuryMoneyPatch?: Partial<TreasuryMoney>;
+  }
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/state/missions`;
+  const batch = writeBatch(db);
+  batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'missions'), {
+    [`entries.${missionId}`]: sanitizeMissionEntry(entry),
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+  });
+
+  if (
+    sideEffects?.inventoryPatch ||
+    sideEffects?.weapons !== undefined
+  ) {
+    const invUpdate: Record<string, unknown> = {
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    };
+    if (sideEffects.inventoryPatch) {
+      Object.entries(sideEffects.inventoryPatch).forEach(([k, q]) => {
+        invUpdate[`stock.${k}`] = Math.max(0, Math.floor(q));
+      });
+    }
+    if (sideEffects.weapons !== undefined) {
+      invUpdate.weapons = sanitizeWeaponsMap(sideEffects.weapons);
+    }
+    batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'inventory'), invUpdate);
+  }
+
+  const hasRewards =
+    sideEffects?.rewardPatches && Object.keys(sideEffects.rewardPatches).length > 0;
+  const hasMoneyPatch =
+    sideEffects?.treasuryMoneyPatch &&
+    (sideEffects.treasuryMoneyPatch.legal !== undefined ||
+      sideEffects.treasuryMoneyPatch.illegal !== undefined);
+
+  if (hasRewards || hasMoneyPatch) {
+    const treasUpdate: Record<string, unknown> = {
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    };
+    if (sideEffects?.rewardPatches) {
+      Object.entries(sideEffects.rewardPatches).forEach(([k, val]) => {
+        treasUpdate[`rewards.${k}`] = {
+          qty: Math.max(0, Math.floor(Number(val.qty) || 0)),
+          val: Math.max(0, Number(val.val) || 0),
+        };
+      });
+    }
+    if (sideEffects?.treasuryMoneyPatch?.legal !== undefined) {
+      treasUpdate.legal = Math.max(0, Number(sideEffects.treasuryMoneyPatch.legal) || 0);
+    }
+    if (sideEffects?.treasuryMoneyPatch?.illegal !== undefined) {
+      treasUpdate.illegal = Math.max(0, Number(sideEffects.treasuryMoneyPatch.illegal) || 0);
+    }
+    batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'treasury'), treasUpdate);
+  }
+
+  try {
+    await batch.commit();
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -435,15 +565,7 @@ export async function saveAllMissionEntries(
   const cleanEntries: Record<string, MissionStateEntry> = {};
   Object.entries(entries).forEach(([k, v]) => {
     if (k === '__week' || !v) return;
-    cleanEntries[k] = {
-      status: v.status || '',
-      completed: Boolean(v.completed),
-      gain: Math.max(0, Number(v.gain) || 0),
-      extra: Math.max(0, Number(v.extra) || 0),
-      players: Array.isArray(v.players)
-        ? v.players.filter((p): p is string => typeof p === 'string').slice(0, 30)
-        : [],
-    };
+    cleanEntries[k] = sanitizeMissionEntry(v);
   });
   try {
     await updateDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'missions'), {
@@ -452,6 +574,71 @@ export async function saveAllMissionEntries(
       updatedAt: serverTimestamp(),
       updatedBy: uid,
     });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function saveAllMissionEntriesWithSideEffects(
+  uid: string,
+  week: string,
+  entries: Record<string, MissionStateEntry>,
+  sideEffects?: {
+    inventoryPatch?: Record<string, number>;
+    weapons?: WeaponsStock;
+    rewardPatches?: Record<string, RewardStockEntry>;
+  }
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/state/missions`;
+  const cleanEntries: Record<string, MissionStateEntry> = {};
+  Object.entries(entries).forEach(([k, v]) => {
+    if (k === '__week' || !v) return;
+    cleanEntries[k] = sanitizeMissionEntry(v);
+  });
+
+  const batch = writeBatch(db);
+  batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'missions'), {
+    week,
+    entries: cleanEntries,
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+  });
+
+  if (
+    (sideEffects?.inventoryPatch && Object.keys(sideEffects.inventoryPatch).length > 0) ||
+    sideEffects?.weapons !== undefined
+  ) {
+    const invUpdate: Record<string, unknown> = {
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    };
+    if (sideEffects.inventoryPatch) {
+      Object.entries(sideEffects.inventoryPatch).forEach(([k, q]) => {
+        invUpdate[`stock.${k}`] = Math.max(0, Math.floor(q));
+      });
+    }
+    if (sideEffects.weapons !== undefined) {
+      invUpdate.weapons = sanitizeWeaponsMap(sideEffects.weapons);
+    }
+    batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'inventory'), invUpdate);
+  }
+
+  if (sideEffects?.rewardPatches && Object.keys(sideEffects.rewardPatches).length > 0) {
+    const treasUpdate: Record<string, unknown> = {
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    };
+    Object.entries(sideEffects.rewardPatches).forEach(([k, val]) => {
+      treasUpdate[`rewards.${k}`] = {
+        qty: Math.max(0, Math.floor(Number(val.qty) || 0)),
+        val: Math.max(0, Number(val.val) || 0),
+      };
+    });
+    batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'treasury'), treasUpdate);
+  }
+
+  try {
+    await batch.commit();
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -482,6 +669,46 @@ export async function resetAllInventory(uid: string): Promise<void> {
       updatedAt: serverTimestamp(),
       updatedBy: uid,
     });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function saveWeaponsStock(
+  uid: string,
+  weapons: WeaponsStock
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/state/inventory`;
+  try {
+    await updateDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'inventory'), {
+      weapons: sanitizeWeaponsMap(weapons),
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function saveWeaponLossGlobal(
+  uid: string,
+  weapons: WeaponsStock,
+  weaponsLossAmount: number
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/state/inventory`;
+  const batch = writeBatch(db);
+  batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'inventory'), {
+    weapons: sanitizeWeaponsMap(weapons),
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+  });
+  batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'treasury'), {
+    weaponsLossAmount: Math.max(0, Number(weaponsLossAmount) || 0),
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+  });
+  try {
+    await batch.commit();
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }

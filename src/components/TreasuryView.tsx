@@ -1,11 +1,33 @@
 import React from 'react';
-import { REWARD_ITEMS } from '@/src/data/cartelData';
-import type { RewardStocks, TreasuryMoney } from '@/src/types/cartel';
-import { formatMoney } from '@/src/utils/finance';
+import { INVENTORY_ITEMS, REWARD_ITEMS, WEEKLY_SCHEDULE } from '@/src/data/cartelData';
+import type {
+  HierarchyMember,
+  InventoryStock,
+  LostWeaponRecord,
+  MissionStates,
+  RewardStocks,
+  TreasuryMoney,
+  WeaponsStock,
+} from '@/src/types/cartel';
+import {
+  calcInventoryTotalValue,
+  calcRewardsTotalValue,
+  calcTotalWealth,
+  calcWeaponsTotalValue,
+  formatMoney,
+  getMissionEntry,
+  getWeaponHolderName,
+  missionFin,
+} from '@/src/utils/finance';
 
 interface TreasuryViewProps {
   treasuryMoney: TreasuryMoney;
   rewardStocks: RewardStocks;
+  inventoryStock: InventoryStock;
+  weaponsStock: WeaponsStock;
+  missionStates: MissionStates;
+  weaponsLossAmount: number;
+  members: HierarchyMember[];
   readonly: boolean;
   onUpdateTreasuryMoney: (type: keyof TreasuryMoney, val: number) => void;
   onUpdateRewardQty: (key: string, delta: number) => void;
@@ -15,19 +37,50 @@ interface TreasuryViewProps {
 export const TreasuryView: React.FC<TreasuryViewProps> = ({
   treasuryMoney,
   rewardStocks,
+  inventoryStock,
+  weaponsStock,
+  missionStates,
+  weaponsLossAmount,
+  members,
   readonly,
   onUpdateTreasuryMoney,
   onUpdateRewardQty,
   onUpdateRewardValue,
 }) => {
-  let rewardsValTotal = 0;
-  REWARD_ITEMS.forEach((i) => {
-    const dat = rewardStocks[i.key] || { qty: 0, val: i.defaultVal };
-    rewardsValTotal += (Number(dat.qty) || 0) * (Number(dat.val) || i.defaultVal);
+  const rewardsValTotal = calcRewardsTotalValue(rewardStocks);
+  const inventoryValTotal = calcInventoryTotalValue(inventoryStock);
+  const weaponsValTotal = calcWeaponsTotalValue(weaponsStock);
+  const combinedInventoryVal = inventoryValTotal + weaponsValTotal;
+  const totalWealth = calcTotalWealth({
+    treasuryMoney,
+    rewardStocks,
+    inventoryStock,
+    weaponsStock,
   });
+  const stockedItems = INVENTORY_ITEMS.filter(
+    (item) => (Number(inventoryStock[item.key]) || 0) > 0
+  );
+  const stockedWeapons = Object.values(weaponsStock).filter(
+    (w) => w && (Number(w.qty) || 0) > 0
+  );
 
-  const totalWealth =
-    (Number(treasuryMoney.legal) || 0) + (Number(treasuryMoney.illegal) || 0) + rewardsValTotal;
+  let weekMaterialCost = 0;
+  let weekExtraLoss = 0;
+  const missionLostWeapons: Array<LostWeaponRecord & { missionName: string }> = [];
+  WEEKLY_SCHEDULE.forEach((day) => {
+    day.missions.forEach((m) => {
+      const f = missionFin(m, missionStates);
+      weekMaterialCost += f.cost;
+      weekExtraLoss += f.extra;
+      const entry = getMissionEntry(missionStates, m.id);
+      if (Array.isArray(entry.lostWeapons)) {
+        entry.lostWeapons.forEach((lw) => {
+          missionLostWeapons.push({ ...lw, missionName: `${day.day} · ${m.name}` });
+        });
+      }
+    });
+  });
+  const totalDebitedLosses = weekExtraLoss + Math.max(0, Number(weaponsLossAmount) || 0);
 
   return (
     <div className="space-y-6">
@@ -38,7 +91,7 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
               <span className="text-gold">🏛️</span> Trésorerie, Argent &amp; Marché Noir (Éminences)
             </h2>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Gérez les fonds du cartel (argent légal, illégal) ainsi que les récompenses du recel.
+              Gérez les fonds du cartel (argent légal, illégal), les récompenses du recel et la valeur du stock (matériel + armes).
             </p>
           </div>
           <div className="text-right">
@@ -51,7 +104,7 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="bg-obsidian/80 border border-zinc-800 rounded-xl p-4 flex flex-col justify-between gap-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">
@@ -103,7 +156,104 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
               </span>
             </div>
           </div>
+
+          <div className="bg-obsidian/80 border border-gold/30 rounded-xl p-4 flex flex-col justify-between gap-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-gold">
+                📦 Valeur Inventaire &amp; Armes
+              </span>
+              <span className="text-[10px] text-zinc-500 font-mono">
+                Marché noir : {formatMoney(rewardsValTotal)}
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5">
+              <span className="text-[11px] text-zinc-400 tabular-nums">
+                Matériel {formatMoney(inventoryValTotal)} · Armes {formatMoney(weaponsValTotal)}
+              </span>
+              <span className="font-mono tabular-nums text-base font-bold text-gold">
+                {formatMoney(combinedInventoryVal)}
+              </span>
+            </div>
+          </div>
         </div>
+
+        {(stockedItems.length > 0 || stockedWeapons.length > 0) && (
+          <div className="bg-obsidian/60 border border-zinc-800/80 rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
+                Détail de l&apos;Inventaire &amp; Arsenal comptabilisés
+              </span>
+              <span className="text-xs font-mono font-bold text-gold tabular-nums">
+                Total : {formatMoney(combinedInventoryVal)}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {stockedItems.map((item) => {
+                const qty = Number(inventoryStock[item.key]) || 0;
+                return (
+                  <span
+                    key={item.key}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-900 border border-zinc-700/80 text-[11px] text-zinc-200 tabular-nums"
+                  >
+                    <span>📦 {item.name}</span>
+                    <span className="font-mono text-zinc-400">&times;{qty}</span>
+                    <span className="font-mono font-bold text-gold">
+                      ({formatMoney(qty * item.price)})
+                    </span>
+                  </span>
+                );
+              })}
+              {stockedWeapons.map((w) => {
+                const qty = Math.max(1, Number(w.qty) || 1);
+                const val = Math.max(0, Number(w.value) || 0);
+                const holderName = getWeaponHolderName(w.holderId, members);
+                return (
+                  <span
+                    key={w.id}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-crimson/10 border border-crimson/40 text-[11px] text-zinc-100 tabular-nums"
+                  >
+                    <span>🔫 {w.name}</span>
+                    <span className="font-mono text-zinc-400">&times;{qty}</span>
+                    <span className="text-zinc-300">— {holderName}</span>
+                    <span className="font-mono font-bold text-gold">
+                      ({formatMoney(qty * val)})
+                    </span>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {(totalDebitedLosses > 0 || weekMaterialCost > 0 || missionLostWeapons.length > 0) && (
+          <div className="bg-red-950/20 border border-red-500/35 rounded-xl p-4 space-y-2.5">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-red-300">
+                📉 Pertes &amp; Débits de la semaine (déduits de l&apos;Inventaire &amp; du Trésor)
+              </span>
+              <span className="text-xs font-mono font-bold text-red-300 tabular-nums">
+                Pertes armes/missions : -{formatMoney(totalDebitedLosses)} · Matériel utilisé : -{formatMoney(weekMaterialCost)}
+              </span>
+            </div>
+            {missionLostWeapons.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {missionLostWeapons.map((lw, idx) => (
+                  <span
+                    key={`${lw.id}-${idx}`}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-red-950/60 border border-red-500/40 text-[11px] text-red-200 tabular-nums"
+                  >
+                    <span>🔫 {lw.name}</span>
+                    <span className="text-zinc-400">({lw.holderName})</span>
+                    <span className="text-zinc-500">· {lw.missionName}</span>
+                    <span className="font-mono font-bold text-red-300">
+                      -{formatMoney(lw.value)}
+                    </span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="space-y-3 pt-2">
           <div className="flex items-center justify-between flex-wrap gap-2">

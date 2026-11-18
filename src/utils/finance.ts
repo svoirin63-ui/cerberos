@@ -1,5 +1,6 @@
 import {
   DAY_NAMES,
+  INVENTORY_ITEMS,
   REWARD_ITEMS,
   TOTAL_WEEKLY_MISSIONS,
   WEEKLY_SCHEDULE,
@@ -15,6 +16,7 @@ import type {
   MissionStatus,
   RewardStocks,
   TreasuryMoney,
+  WeaponsStock,
 } from '@/src/types/cartel';
 
 function pad2(n: number): string {
@@ -135,14 +137,74 @@ export function checkStockAvailability(
   return { available: currentStock > 0, count: currentStock };
 }
 
+export function calcInventoryTotalValue(inventoryStock: InventoryStock): number {
+  return INVENTORY_ITEMS.reduce((sum, item) => {
+    const qty = Math.max(0, Number(inventoryStock[item.key]) || 0);
+    return sum + qty * item.price;
+  }, 0);
+}
+
+export function calcRewardsTotalValue(rewardStocks: RewardStocks): number {
+  return REWARD_ITEMS.reduce((sum, item) => {
+    const dat = rewardStocks[item.key] || { qty: 0, val: item.defaultVal };
+    const qty = Math.max(0, Number(dat.qty) || 0);
+    const val = dat.val !== undefined ? Math.max(0, Number(dat.val) || 0) : item.defaultVal;
+    return sum + qty * val;
+  }, 0);
+}
+
+export function calcWeaponsTotalValue(weaponsStock: WeaponsStock): number {
+  return Object.values(weaponsStock).reduce((sum, w) => {
+    if (!w || typeof w !== 'object') return sum;
+    const qty = Math.max(0, Number(w.qty) || 0);
+    const val = Math.max(0, Number(w.value) || 0);
+    return sum + qty * val;
+  }, 0);
+}
+
+export function getWeaponHolderName(
+  holderId: string,
+  members: HierarchyMember[]
+): string {
+  if (!holderId || holderId === 'coffre') return 'Coffre Cartel';
+  const found = members.find((m) => m.id === holderId);
+  return found ? found.name : 'Ancien membre';
+}
+
+export function calcTotalWealth(params: {
+  treasuryMoney: TreasuryMoney;
+  rewardStocks: RewardStocks;
+  inventoryStock: InventoryStock;
+  weaponsStock?: WeaponsStock;
+}): number {
+  const { treasuryMoney, rewardStocks, inventoryStock, weaponsStock = {} } = params;
+  return (
+    Math.max(0, Number(treasuryMoney.legal) || 0) +
+    Math.max(0, Number(treasuryMoney.illegal) || 0) +
+    calcRewardsTotalValue(rewardStocks) +
+    calcInventoryTotalValue(inventoryStock) +
+    calcWeaponsTotalValue(weaponsStock)
+  );
+}
+
 export function buildDiscordReport(params: {
   missionStates: MissionStates;
   treasuryMoney: TreasuryMoney;
   rewardStocks: RewardStocks;
+  inventoryStock?: InventoryStock;
+  weaponsStock?: WeaponsStock;
   weaponsLossAmount: number;
   hierMembers?: HierarchyMember[];
 }): string {
-  const { missionStates, treasuryMoney, rewardStocks, weaponsLossAmount, hierMembers = [] } = params;
+  const {
+    missionStates,
+    treasuryMoney,
+    rewardStocks,
+    inventoryStock = {},
+    weaponsStock = {},
+    weaponsLossAmount,
+    hierMembers = [],
+  } = params;
   let discordText = '```asciidoc\n';
   discordText += '= BILAN COMPTABLE & TRÉSORERIE LOS CERBEROS =\n';
   discordText += `Semaine ${weekRangeText(missionStates)}\n\n`;
@@ -153,16 +215,39 @@ export function buildDiscordReport(params: {
   let rewardsValTotal = 0;
   REWARD_ITEMS.forEach((i) => {
     const dat = rewardStocks[i.key] || { qty: 0, val: i.defaultVal };
-    const sub = (Number(dat.qty) || 0) * (Number(dat.val) || i.defaultVal);
+    const qty = Math.max(0, Number(dat.qty) || 0);
+    const val = dat.val !== undefined ? Math.max(0, Number(dat.val) || 0) : i.defaultVal;
+    const sub = qty * val;
     rewardsValTotal += sub;
-    if (dat.qty > 0) {
-      discordText += `- ${i.name} (${dat.qty}x) : ${formatMoney(sub)}\n`;
+    if (qty > 0) {
+      discordText += `- ${i.name} (${qty}x) : ${formatMoney(sub)}\n`;
+    }
+  });
+
+  const inventoryValTotal = calcInventoryTotalValue(inventoryStock);
+  INVENTORY_ITEMS.forEach((i) => {
+    const qty = Math.max(0, Number(inventoryStock[i.key]) || 0);
+    if (qty > 0) {
+      discordText += `- [Stock] ${i.name} (${qty}x) : ${formatMoney(qty * i.price)}\n`;
+    }
+  });
+
+  const weaponsValTotal = calcWeaponsTotalValue(weaponsStock);
+  Object.values(weaponsStock).forEach((w) => {
+    if (!w) return;
+    const qty = Math.max(0, Number(w.qty) || 0);
+    const val = Math.max(0, Number(w.value) || 0);
+    if (qty > 0) {
+      const holderName = getWeaponHolderName(w.holderId, hierMembers);
+      discordText += `- [Arme] ${w.name} (${qty}x) — ${holderName} : ${formatMoney(qty * val)}\n`;
     }
   });
 
   discordText += `Valeur Marché Noir (Total): ${formatMoney(rewardsValTotal)}\n`;
+  discordText += `Valeur Inventaire (Stock) : ${formatMoney(inventoryValTotal)}\n`;
+  discordText += `Valeur Arsenal (Armes)    : ${formatMoney(weaponsValTotal)}\n`;
   discordText += `PATRIMOINE GLOBAL CARTEL  : ${formatMoney(
-    (Number(treasuryMoney.legal) || 0) + (Number(treasuryMoney.illegal) || 0) + rewardsValTotal
+    calcTotalWealth({ treasuryMoney, rewardStocks, inventoryStock, weaponsStock })
   )}\n`;
   discordText += `---------------------------------------------\n`;
 

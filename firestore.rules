@@ -91,8 +91,9 @@ service cloud.firestore {
 
     function isValidInventoryState(data) {
       return data.keys().hasAll(['stock', 'updatedAt', 'updatedBy']) &&
-        data.keys().hasOnly(['stock', 'updatedAt', 'updatedBy']) &&
+        data.keys().hasOnly(['stock', 'weapons', 'updatedAt', 'updatedBy']) &&
         data.stock is map && data.stock.size() <= 40 &&
+        (!('weapons' in data) || (data.weapons is map && data.weapons.size() <= 150)) &&
         data.updatedAt is timestamp &&
         isValidId(data.updatedBy);
     }
@@ -125,7 +126,7 @@ service cloud.firestore {
 
     function isValidStateUpdate(stateId, next, prev) {
       return (stateId == 'missions' && next.diff(prev).affectedKeys().hasOnly(['week', 'entries', 'updatedAt', 'updatedBy'])) ||
-        (stateId == 'inventory' && next.diff(prev).affectedKeys().hasOnly(['stock', 'updatedAt', 'updatedBy'])) ||
+        (stateId == 'inventory' && next.diff(prev).affectedKeys().hasOnly(['stock', 'weapons', 'updatedAt', 'updatedBy'])) ||
         (stateId == 'treasury' && next.diff(prev).affectedKeys().hasOnly(['legal', 'illegal', 'rewards', 'weaponsLossAmount', 'updatedAt', 'updatedBy'])) ||
         (stateId == 'hierarchy' && next.diff(prev).affectedKeys().hasOnly(['members', 'updatedAt', 'updatedBy']));
     }

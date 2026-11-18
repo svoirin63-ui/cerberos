@@ -114,11 +114,15 @@
     },
     "InventoryState": {
       "title": "InventoryState",
-      "description": "Shared cartel equipment inventory stock counts",
+      "description": "Shared cartel equipment inventory stock counts and weapons arsenal",
       "type": "object",
       "properties": {
         "stock": {
           "type": "object"
+        },
+        "weapons": {
+          "type": "object",
+          "description": "Weapons arsenal entries (name, value, qty, holderId, notes)"
         },
         "updatedAt": {
           "type": "string",

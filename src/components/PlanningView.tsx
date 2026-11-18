@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { DAY_NAMES, WEEKLY_SCHEDULE } from '@/src/data/cartelData';
+import { DAY_NAMES, REWARD_ITEMS, WEEKLY_SCHEDULE } from '@/src/data/cartelData';
 import type {
   HierarchyMember,
   InventoryStock,
   Mission,
   MissionStates,
   MissionStatus,
+  RewardStocks,
+  WeaponsStock,
 } from '@/src/types/cartel';
 import {
   checkStockAvailability,
@@ -16,6 +18,7 @@ import {
   formatMoney,
   formatSigned,
   getMissionEntry,
+  getWeaponHolderName,
   isTodayName,
   missionFin,
   netClass,
@@ -24,12 +27,18 @@ import {
 interface PlanningViewProps {
   missionStates: MissionStates;
   inventoryStock: InventoryStock;
+  weaponsStock: WeaponsStock;
+  rewardStocks: RewardStocks;
   members: HierarchyMember[];
   readonly: boolean;
   onSetMissionStatus: (id: string, status: Exclude<MissionStatus, ''>) => void;
   onUpdateMissionGain: (id: string, value: number) => void;
   onUpdateMissionExtra: (id: string, value: number) => void;
   onToggleMissionPlayer: (id: string, playerId: string) => void;
+  onAdjustMissionLoot: (missionId: string, rewardKey: string, delta: number) => void;
+  onDeclareMissionWeaponLoss: (missionId: string, weaponId: string) => void;
+  onRevertMissionWeaponLoss: (missionId: string, lostIndex: number) => void;
+  onOpenMissionValidation: (mission: Mission, dayName: string) => void;
   onToggleWholeDay: (dayName: string) => void;
   onToggleAllWeek: () => void;
 }
@@ -37,12 +46,18 @@ interface PlanningViewProps {
 export const PlanningView: React.FC<PlanningViewProps> = ({
   missionStates,
   inventoryStock,
+  weaponsStock,
+  rewardStocks,
   members,
   readonly,
   onSetMissionStatus,
   onUpdateMissionGain,
   onUpdateMissionExtra,
   onToggleMissionPlayer,
+  onAdjustMissionLoot,
+  onDeclareMissionWeaponLoss,
+  onRevertMissionWeaponLoss,
+  onOpenMissionValidation,
   onToggleWholeDay,
   onToggleAllWeek,
 }) => {
@@ -103,6 +118,195 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
       ),
     [members]
   );
+
+  const [selectedWeaponByMission, setSelectedWeaponByMission] = useState<
+    Record<string, string>
+  >({});
+
+  const stockedWeapons = useMemo(
+    () =>
+      Object.values(weaponsStock)
+        .filter((w) => w && (Number(w.qty) || 0) > 0)
+        .sort((a, b) => a.name.localeCompare(b.name, 'fr-FR')),
+    [weaponsStock]
+  );
+
+  const renderLootSelector = (missionId: string, lootMap: Record<string, number>) => {
+    const activeItems = REWARD_ITEMS.filter((item) => (lootMap[item.key] || 0) > 0);
+    if (readonly && activeItems.length === 0) return null;
+
+    return (
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] font-semibold text-zinc-400">
+            <span className="text-gold">💎</span> Objets récupérés (→ Inventaire, Trésorerie &amp; Gains) :
+          </span>
+          {activeItems.length > 0 && (
+            <span className="text-[10px] font-mono text-emerald-300 tabular-nums">
+              {activeItems.reduce((s, it) => s + (lootMap[it.key] || 0), 0)} objet(s)
+            </span>
+          )}
+        </div>
+        {readonly ? (
+          <div className="flex flex-wrap gap-1.5">
+            {activeItems.map((item) => {
+              const qty = lootMap[item.key] || 0;
+              return (
+                <span
+                  key={item.key}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-amber-500/15 text-amber-200 border border-amber-500/40 tabular-nums"
+                >
+                  {item.name} &times;{qty}
+                </span>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {REWARD_ITEMS.map((item) => {
+              const qty = lootMap[item.key] || 0;
+              const unitVal =
+                rewardStocks[item.key]?.val !== undefined
+                  ? Number(rewardStocks[item.key].val)
+                  : item.defaultVal;
+              return (
+                <div
+                  key={item.key}
+                  className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] transition ${
+                    qty > 0
+                      ? 'bg-amber-500/15 border-amber-500/50 text-amber-200'
+                      : 'bg-zinc-950/85 border-zinc-800 text-zinc-400'
+                  }`}
+                >
+                  <span className="font-medium">{item.name}</span>
+                  <span className="font-mono text-[10px] text-zinc-500">
+                    ({unitVal}$)
+                  </span>
+                  {qty > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => onAdjustMissionLoot(missionId, item.key, -1)}
+                      className="w-4 h-4 rounded bg-zinc-800 hover:bg-zinc-700 text-white font-bold flex items-center justify-center cursor-pointer"
+                      title="Retirer 1"
+                    >
+                      -
+                    </button>
+                  )}
+                  {qty > 0 && (
+                    <span className="font-mono font-bold text-gold px-0.5 tabular-nums">
+                      {qty}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => onAdjustMissionLoot(missionId, item.key, 1)}
+                    className="w-4 h-4 rounded bg-zinc-800 hover:bg-gold hover:text-obsidian text-zinc-200 font-bold flex items-center justify-center cursor-pointer"
+                    title="Ajouter 1"
+                  >
+                    +
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderWeaponLossSelector = (
+    missionId: string,
+    lostWeapons: NonNullable<ReturnType<typeof getMissionEntry>['lostWeapons']>,
+    highlightFail = false
+  ) => {
+    if (readonly && lostWeapons.length === 0) return null;
+    const chosenId =
+      selectedWeaponByMission[missionId] &&
+      stockedWeapons.some((w) => w.id === selectedWeaponByMission[missionId])
+        ? selectedWeaponByMission[missionId]
+        : stockedWeapons[0]?.id || '';
+
+    return (
+      <div
+        className={`space-y-1.5 ${
+          highlightFail
+            ? 'bg-red-950/25 border border-red-500/35 rounded-lg p-2'
+            : ''
+        }`}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] font-semibold text-zinc-300">
+            <span className="text-red-400">🔫</span> Arme(s) perdue(s) (→ Débit Inventaire, Trésorerie &amp; Pertes) :
+          </span>
+          {lostWeapons.length > 0 && (
+            <span className="text-[10px] font-mono text-red-300 tabular-nums">
+              {lostWeapons.length} perdue(s)
+            </span>
+          )}
+        </div>
+
+        {lostWeapons.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {lostWeapons.map((lw, idx) => (
+              <span
+                key={`${lw.id}-${idx}`}
+                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] bg-red-950/60 border border-red-500/40 text-red-200 tabular-nums"
+              >
+                <span>
+                  {lw.name} ({lw.holderName}) · -{formatMoney(lw.value)}
+                </span>
+                {!readonly && (
+                  <button
+                    type="button"
+                    title="Annuler cette perte"
+                    onClick={() => onRevertMissionWeaponLoss(missionId, idx)}
+                    className="text-red-300 hover:text-white font-bold cursor-pointer"
+                  >
+                    &times;
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {!readonly && (
+          stockedWeapons.length > 0 ? (
+            <div className="flex items-center gap-1.5">
+              <select
+                value={chosenId}
+                onChange={(e) =>
+                  setSelectedWeaponByMission((prev) => ({
+                    ...prev,
+                    [missionId]: e.target.value,
+                  }))
+                }
+                className="flex-1 min-w-0 bg-zinc-950 border border-zinc-700 focus:border-red-400 rounded-lg px-2 py-1 text-[11px] text-zinc-200 focus:outline-none"
+              >
+                {stockedWeapons.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name} — {getWeaponHolderName(w.holderId, members)} ({formatMoney(w.value)}) [x{w.qty}]
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={!chosenId}
+                onClick={() => chosenId && onDeclareMissionWeaponLoss(missionId, chosenId)}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-crimson/30 hover:bg-crimson/50 text-red-200 border border-crimson-light/40 transition whitespace-nowrap cursor-pointer"
+              >
+                Perdue (-1)
+              </button>
+            </div>
+          ) : (
+            <p className="text-[11px] italic text-zinc-500">
+              Aucune arme enregistrée dans l&apos;Inventaire.
+            </p>
+          )
+        )}
+      </div>
+    );
+  };
 
   const renderPlayerSelector = (missionId: string, selectedIds: string[]) => {
     const selectedMembers = sortedMembers.filter((m) => selectedIds.includes(m.id));
@@ -170,8 +374,8 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
     ? WEEKLY_SCHEDULE.filter((d) => d.day === activeFilter)
     : WEEKLY_SCHEDULE;
 
-  const renderSingleDayRows = (missions: Mission[]) => {
-    const cols = 'lg:grid-cols-[minmax(0,2.4fr)_95px_205px_135px_135px_115px]';
+  const renderSingleDayRows = (dayName: string, missions: Mission[]) => {
+    const cols = 'lg:grid-cols-[minmax(0,2.2fr)_85px_285px_125px_125px_105px]';
     const inputCls = (active: boolean, color: string) =>
       `w-full bg-zinc-950/90 border ${
         active ? color : 'border-zinc-700/80 text-zinc-200'
@@ -260,7 +464,19 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => onOpenMissionValidation(m, dayName)}
+                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition whitespace-nowrap cursor-pointer ${
+                      f.done
+                        ? 'bg-gold/20 text-gold-light border-gold/50 hover:bg-gold/30'
+                        : 'bg-gold hover:bg-gold-light text-obsidian border-gold shadow-sm'
+                    }`}
+                    title={f.done ? 'Modifier la validation' : 'Valider la mission'}
+                  >
+                    {f.done ? '✎ Modifier' : '📋 Valider'}
+                  </button>
                   <button
                     type="button"
                     disabled={readonly}
@@ -339,7 +555,13 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                 </div>
 
                 {f.done && (
-                  <div className="lg:col-span-full pt-2 mt-1 border-t border-zinc-800/70">
+                  <div className="lg:col-span-full pt-2 mt-1 border-t border-zinc-800/70 space-y-2.5">
+                    {f.success && renderLootSelector(m.id, st.loot || {})}
+                    {renderWeaponLossSelector(
+                      m.id,
+                      Array.isArray(st.lostWeapons) ? st.lostWeapons : [],
+                      f.fail
+                    )}
                     {renderPlayerSelector(m.id, selectedPlayers)}
                   </div>
                 )}
@@ -493,7 +715,7 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
               {isOpen && (
                 <>
                   {single ? (
-                    renderSingleDayRows(dayObj.missions)
+                    renderSingleDayRows(dayObj.day, dayObj.missions)
                   ) : (
                     <div className="p-3.5 sm:p-4 space-y-2.5 flex-1">
                       {dayObj.missions.map((mission) => {
@@ -581,23 +803,38 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                               <span className="text-zinc-500">Matériel :</span> {mission.gearName}
                             </p>
 
-                            <div className="mt-2.5 flex items-center gap-2">
+                            <div className="mt-2.5 space-y-1.5">
                               <button
                                 type="button"
-                                disabled={readonly}
-                                onClick={() => onSetMissionStatus(mission.id, 'success')}
-                                className={okBtn}
+                                onClick={() => onOpenMissionValidation(mission, dayObj.day)}
+                                className={`w-full px-3 py-2 rounded-lg text-xs font-bold border transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                                  f.done
+                                    ? 'bg-gold/15 hover:bg-gold/25 text-gold-light border-gold/50'
+                                    : 'bg-gold hover:bg-gold-light text-obsidian border-gold shadow-md'
+                                }`}
                               >
-                                ✅ Réussie
+                                {f.done
+                                  ? '✓ Mission validée · Modifier les détails'
+                                  : '✅ Valider la mission (Matériel, Objets, Armes)'}
                               </button>
-                              <button
-                                type="button"
-                                disabled={readonly}
-                                onClick={() => onSetMissionStatus(mission.id, 'fail')}
-                                className={koBtn}
-                              >
-                                ❌ Échouée
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  disabled={readonly}
+                                  onClick={() => onSetMissionStatus(mission.id, 'success')}
+                                  className={okBtn}
+                                >
+                                  ✅ Réussie
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={readonly}
+                                  onClick={() => onSetMissionStatus(mission.id, 'fail')}
+                                  className={koBtn}
+                                >
+                                  ❌ Échouée
+                                </button>
+                              </div>
                             </div>
 
                             {f.done && (
@@ -641,8 +878,15 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                                 )}
 
                                 <div className="flex items-center justify-between gap-2">
-                                  <span className="text-[11px] text-zinc-400">
-                                    <span className="text-amber-300">📦</span> Matériel utilisé (auto) :
+                                  <span className="text-[11px] text-zinc-400 flex items-center gap-1.5 flex-wrap">
+                                    <span>
+                                      <span className="text-amber-300">📦</span> Matériel utilisé :
+                                    </span>
+                                    {st.gearConsumed && (
+                                      <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-semibold">
+                                        -1 débité du stock
+                                      </span>
+                                    )}
                                   </span>
                                   <span className="font-mono tabular-nums text-xs font-bold text-amber-300">
                                     -{formatMoney(f.cost)}
@@ -677,6 +921,20 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                                       $
                                     </span>
                                   </div>
+                                </div>
+
+                                {f.success && (
+                                  <div className="pt-1.5 border-t border-zinc-800/70">
+                                    {renderLootSelector(mission.id, st.loot || {})}
+                                  </div>
+                                )}
+
+                                <div className="pt-1.5 border-t border-zinc-800/70">
+                                  {renderWeaponLossSelector(
+                                    mission.id,
+                                    Array.isArray(st.lostWeapons) ? st.lostWeapons : [],
+                                    f.fail
+                                  )}
                                 </div>
 
                                 <div className="pt-1.5 border-t border-zinc-800/70">

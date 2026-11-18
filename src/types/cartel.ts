@@ -34,12 +34,23 @@ export interface DaySchedule {
   missions: Mission[];
 }
 
+export interface LostWeaponRecord {
+  id: string;
+  name: string;
+  value: number;
+  holderId: string;
+  holderName: string;
+}
+
 export interface MissionStateEntry {
   status?: MissionStatus;
   completed?: boolean;
   gain?: number;
   extra?: number;
   players?: string[];
+  gearConsumed?: boolean;
+  loot?: Record<string, number>;
+  lostWeapons?: LostWeaponRecord[];
 }
 
 export interface MissionStates {
@@ -65,6 +76,17 @@ export interface InventoryItem {
 }
 
 export type InventoryStock = Record<string, number>;
+
+export interface WeaponEntry {
+  id: string;
+  name: string;
+  value: number;
+  qty: number;
+  holderId: string;
+  notes?: string;
+}
+
+export type WeaponsStock = Record<string, WeaponEntry>;
 
 export interface TreasuryMoney {
   legal: number;
