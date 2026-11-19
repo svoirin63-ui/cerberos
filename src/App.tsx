@@ -43,6 +43,7 @@ import {
   saveAllMissionEntriesWithSideEffects,
   saveHierarchyMembers,
   saveInventoryItem,
+  saveInventoryOrderReceipt,
   saveMissionEntry,
   saveMissionWithSideEffects,
   saveRewardItem,
@@ -71,6 +72,7 @@ import type {
 } from '@/src/types/cartel';
 import {
   buildDiscordReport,
+  calcRewardsTotalValue,
   calcTotalWealth,
   currentWeekStart,
   formatMoney,
@@ -284,6 +286,12 @@ export default function App() {
 
     const netProfit = grossGains - (totalCost + extraLoss + weaponsLossAmount);
 
+    const rewardsValTotal = calcRewardsTotalValue(rewardStocks);
+    const rewardsItemCount = REWARD_ITEMS.reduce(
+      (sum, item) => sum + Math.max(0, Number(rewardStocks[item.key]?.qty) || 0),
+      0
+    );
+
     const totalWealth = calcTotalWealth({
       treasuryMoney,
       rewardStocks,
@@ -297,6 +305,8 @@ export default function App() {
       grossGains,
       netProfit,
       totalWealth,
+      rewardsValTotal,
+      rewardsItemCount,
     };
   }, [missionStates, weaponsLossAmount, rewardStocks, treasuryMoney, inventoryStock, weaponsStock]);
 
@@ -1062,6 +1072,47 @@ export default function App() {
     );
   };
 
+  const handleReceiveOrder = (
+    orderMap: Record<string, number>,
+    debitAccount: 'none' | 'legal' | 'illegal',
+    debitAmount: number
+  ) => {
+    if (readonly || !authUser) return;
+    const stockPatch: Record<string, number> = {};
+    const nextStock = { ...inventoryStock };
+    let totalAdded = 0;
+
+    Object.entries(orderMap).forEach(([k, qty]) => {
+      const addQty = Math.max(0, Math.floor(Number(qty) || 0));
+      if (addQty <= 0) return;
+      const updated = Math.max(0, Math.floor(Number(nextStock[k]) || 0)) + addQty;
+      nextStock[k] = updated;
+      stockPatch[k] = updated;
+      totalAdded += addQty;
+    });
+
+    if (totalAdded <= 0) return;
+    setInventoryStock(nextStock);
+
+    let treasuryPatch: Partial<TreasuryMoney> | undefined;
+    if (debitAccount !== 'none' && debitAmount > 0) {
+      const current = Math.max(0, Number(treasuryMoney[debitAccount]) || 0);
+      const updatedBal = Math.max(0, current - debitAmount);
+      treasuryPatch = { [debitAccount]: updatedBal };
+      setTreasuryMoney((prev) => ({ ...prev, [debitAccount]: updatedBal }));
+    }
+
+    void saveInventoryOrderReceipt(authUser.uid, stockPatch, treasuryPatch).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+
+    const debitMsg =
+      debitAccount !== 'none' && debitAmount > 0
+        ? ` (-${formatMoney(debitAmount)} ${debitAccount === 'legal' ? 'Argent Légal' : 'Argent Sale'})`
+        : '';
+    showToast(`Commande réceptionnée : +${totalAdded} pièce${totalAdded > 1 ? 's' : ''} ajoutée${totalAdded > 1 ? 's' : ''} au stock${debitMsg} !`);
+  };
+
   const handleUpdateTreasuryMoney = (type: keyof TreasuryMoney, val: number) => {
     if (readonly || !authUser) return;
     const cleanVal = Math.max(0, Number(val) || 0);
@@ -1471,7 +1522,7 @@ export default function App() {
           </div>
 
           {/* KPIs / COMPTEURS EN TEMPS RÉEL */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 mt-4">
             <div className="bg-charcoal/90 gold-border rounded-xl p-3 flex flex-col justify-between">
               <span className="text-[10px] uppercase tracking-wider text-zinc-400 font-semibold">
                 Missions Réussies
@@ -1497,6 +1548,25 @@ export default function App() {
                 <span className="text-[10px] text-zinc-500 font-mono">Coffre Cartel</span>
               </div>
             </div>
+
+            <button
+              type="button"
+              onClick={() => setCurrentTab('treasury')}
+              title="Voir le détail des objets à vendre dans la Trésorerie"
+              className="bg-charcoal/90 border border-amber-500/40 hover:border-gold rounded-xl p-3 flex flex-col justify-between text-left transition cursor-pointer"
+            >
+              <span className="text-[10px] uppercase tracking-wider text-amber-300 font-semibold">
+                💎 Objets à Vendre (Recel)
+              </span>
+              <div className="mt-1.5 flex items-baseline justify-between gap-2">
+                <span className="font-display text-lg sm:text-xl font-extrabold text-gold tabular-nums">
+                  {formatMoney(kpis.rewardsValTotal)}
+                </span>
+                <span className="text-[10px] text-zinc-400 font-mono tabular-nums">
+                  {kpis.rewardsItemCount} objet{kpis.rewardsItemCount > 1 ? 's' : ''}
+                </span>
+              </div>
+            </button>
 
             <div className="bg-charcoal/90 gold-border rounded-xl p-3 flex flex-col justify-between">
               <span className="text-[10px] uppercase tracking-wider text-zinc-400 font-semibold">
@@ -1527,7 +1597,7 @@ export default function App() {
                   {formatMoney(kpis.netProfit)}
                 </span>
                 <span className="text-[10px] text-zinc-500 font-mono">
-                  Gains - Matériel - Pertes
+                  Gains - Mat. - Pertes
                 </span>
               </div>
             </div>
@@ -1604,10 +1674,13 @@ export default function App() {
             inventoryStock={inventoryStock}
             weaponsStock={weaponsStock}
             rewardStocks={rewardStocks}
+            missionStates={missionStates}
+            treasuryMoney={treasuryMoney}
             members={hierMembers}
             readonly={readonly}
             onUpdateStock={handleUpdateStock}
             onResetStock={handleResetStock}
+            onReceiveOrder={handleReceiveOrder}
             onSaveWeapon={handleSaveWeapon}
             onUpdateWeaponQty={handleUpdateWeaponQty}
             onDeleteWeapon={handleDeleteWeapon}

@@ -50,7 +50,10 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
   const rewardsValTotal = calcRewardsTotalValue(rewardStocks);
   const inventoryValTotal = calcInventoryTotalValue(inventoryStock);
   const weaponsValTotal = calcWeaponsTotalValue(weaponsStock);
-  const combinedInventoryVal = inventoryValTotal + weaponsValTotal;
+  const totalWeaponsCount = Object.values(weaponsStock).reduce(
+    (sum, w) => sum + Math.max(0, Number(w?.qty) || 0),
+    0
+  );
   const totalWealth = calcTotalWealth({
     treasuryMoney,
     rewardStocks,
@@ -63,6 +66,13 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
   const stockedWeapons = Object.values(weaponsStock).filter(
     (w) => w && (Number(w.qty) || 0) > 0
   );
+  const stockedRewards = REWARD_ITEMS.map((item) => {
+    const dat = rewardStocks[item.key] || { qty: 0, val: item.defaultVal };
+    const qty = Math.max(0, Number(dat.qty) || 0);
+    const val = dat.val !== undefined ? Math.max(0, Number(dat.val) || 0) : item.defaultVal;
+    return { item, qty, val, subTotal: qty * val };
+  }).filter((r) => r.qty > 0);
+  const totalRewardsQty = stockedRewards.reduce((sum, r) => sum + r.qty, 0);
 
   let weekMaterialCost = 0;
   let weekExtraLoss = 0;
@@ -104,7 +114,7 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           <div className="bg-obsidian/80 border border-zinc-800 rounded-xl p-4 flex flex-col justify-between gap-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">
@@ -157,70 +167,125 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
             </div>
           </div>
 
-          <div className="bg-obsidian/80 border border-gold/30 rounded-xl p-4 flex flex-col justify-between gap-3">
+          <div className="bg-obsidian/80 border border-amber-500/40 rounded-xl p-4 flex flex-col justify-between gap-3">
             <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-bold uppercase tracking-wider text-gold">
-                📦 Valeur Inventaire &amp; Armes
+              <span className="text-xs font-bold uppercase tracking-wider text-amber-300">
+                💎 Objets à Vendre
               </span>
-              <span className="text-[10px] text-zinc-500 font-mono">
-                Marché noir : {formatMoney(rewardsValTotal)}
+              <span className="text-[10px] text-zinc-400 font-mono tabular-nums">
+                {totalRewardsQty} objet{totalRewardsQty > 1 ? 's' : ''}
               </span>
             </div>
             <div className="flex items-baseline justify-between gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5">
-              <span className="text-[11px] text-zinc-400 tabular-nums">
-                Matériel {formatMoney(inventoryValTotal)} · Armes {formatMoney(weaponsValTotal)}
+              <span className="text-[11px] text-zinc-400">
+                Recel
               </span>
               <span className="font-mono tabular-nums text-base font-bold text-gold">
-                {formatMoney(combinedInventoryVal)}
+                {formatMoney(rewardsValTotal)}
+              </span>
+            </div>
+          </div>
+
+          <div className="bg-obsidian/80 border border-gold/30 rounded-xl p-4 flex flex-col justify-between gap-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-gold">
+                💣 Matériel Braquage
+              </span>
+              <span className="text-[10px] text-zinc-500 font-mono">Packs &amp; outils</span>
+            </div>
+            <div className="flex items-baseline justify-between gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5">
+              <span className="text-[11px] text-zinc-400">Stock</span>
+              <span className="font-mono tabular-nums text-base font-bold text-gold">
+                {formatMoney(inventoryValTotal)}
+              </span>
+            </div>
+          </div>
+
+          <div className="bg-obsidian/80 border border-crimson/40 rounded-xl p-4 flex flex-col justify-between gap-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-red-300">
+                🔫 Arsenal (Armes)
+              </span>
+              <span className="text-[10px] text-zinc-400 font-mono tabular-nums">
+                {totalWeaponsCount} arme{totalWeaponsCount > 1 ? 's' : ''}
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5">
+              <span className="text-[11px] text-zinc-400">Armurerie</span>
+              <span className="font-mono tabular-nums text-base font-bold text-white">
+                {formatMoney(weaponsValTotal)}
               </span>
             </div>
           </div>
         </div>
 
         {(stockedItems.length > 0 || stockedWeapons.length > 0) && (
-          <div className="bg-obsidian/60 border border-zinc-800/80 rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
-                Détail de l&apos;Inventaire &amp; Arsenal comptabilisés
-              </span>
-              <span className="text-xs font-mono font-bold text-gold tabular-nums">
-                Total : {formatMoney(combinedInventoryVal)}
-              </span>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="bg-obsidian/60 border border-zinc-800/80 rounded-xl p-4 space-y-2.5">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
+                  💣 Matériel de Braquage en stock
+                </span>
+                <span className="text-xs font-mono font-bold text-gold tabular-nums">
+                  {formatMoney(inventoryValTotal)}
+                </span>
+              </div>
+              {stockedItems.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {stockedItems.map((item) => {
+                    const qty = Number(inventoryStock[item.key]) || 0;
+                    return (
+                      <span
+                        key={item.key}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-900 border border-zinc-700/80 text-[11px] text-zinc-200 tabular-nums"
+                      >
+                        <span>📦 {item.name}</span>
+                        <span className="font-mono text-zinc-400">&times;{qty}</span>
+                        <span className="font-mono font-bold text-gold">
+                          ({formatMoney(qty * item.price)})
+                        </span>
+                      </span>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-[11px] text-zinc-500 italic">Aucun matériel de braquage en stock.</p>
+              )}
             </div>
-            <div className="flex flex-wrap gap-2">
-              {stockedItems.map((item) => {
-                const qty = Number(inventoryStock[item.key]) || 0;
-                return (
-                  <span
-                    key={item.key}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-900 border border-zinc-700/80 text-[11px] text-zinc-200 tabular-nums"
-                  >
-                    <span>📦 {item.name}</span>
-                    <span className="font-mono text-zinc-400">&times;{qty}</span>
-                    <span className="font-mono font-bold text-gold">
-                      ({formatMoney(qty * item.price)})
-                    </span>
-                  </span>
-                );
-              })}
-              {stockedWeapons.map((w) => {
-                const qty = Math.max(1, Number(w.qty) || 1);
-                const val = Math.max(0, Number(w.value) || 0);
-                const holderName = getWeaponHolderName(w.holderId, members);
-                return (
-                  <span
-                    key={w.id}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-crimson/10 border border-crimson/40 text-[11px] text-zinc-100 tabular-nums"
-                  >
-                    <span>🔫 {w.name}</span>
-                    <span className="font-mono text-zinc-400">&times;{qty}</span>
-                    <span className="text-zinc-300">— {holderName}</span>
-                    <span className="font-mono font-bold text-gold">
-                      ({formatMoney(qty * val)})
-                    </span>
-                  </span>
-                );
-              })}
+
+            <div className="bg-obsidian/60 border border-zinc-800/80 rounded-xl p-4 space-y-2.5">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-red-300">
+                  🔫 Arsenal (Armes) comptabilisé
+                </span>
+                <span className="text-xs font-mono font-bold text-gold tabular-nums">
+                  {formatMoney(weaponsValTotal)}
+                </span>
+              </div>
+              {stockedWeapons.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {stockedWeapons.map((w) => {
+                    const qty = Math.max(1, Number(w.qty) || 1);
+                    const val = Math.max(0, Number(w.value) || 0);
+                    const holderName = getWeaponHolderName(w.holderId, members);
+                    return (
+                      <span
+                        key={w.id}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-crimson/10 border border-crimson/40 text-[11px] text-zinc-100 tabular-nums"
+                      >
+                        <span>🔫 {w.name}</span>
+                        <span className="font-mono text-zinc-400">&times;{qty}</span>
+                        <span className="text-zinc-300">— {holderName}</span>
+                        <span className="font-mono font-bold text-gold">
+                          ({formatMoney(qty * val)})
+                        </span>
+                      </span>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-[11px] text-zinc-500 italic">Aucune arme enregistrée.</p>
+              )}
             </div>
           </div>
         )}
@@ -258,11 +323,38 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
         <div className="space-y-3 pt-2">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <h3 className="font-display text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
-              <span className="text-gold">✨</span> Actifs &amp; Objets du Marché Noir
+              <span className="text-gold">✨</span> Actifs &amp; Objets du Marché Noir (À Vendre)
             </h3>
             <p className="text-[11px] text-zinc-400">
               Tarifs officiels du receleur (Lingot d&apos;or = 200 $)
             </p>
+          </div>
+
+          <div className="bg-obsidian/70 border border-amber-500/35 rounded-xl p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <span className="text-xs font-bold text-amber-200">
+                Valeur totale estimée à la revente ({totalRewardsQty} objet{totalRewardsQty > 1 ? 's' : ''})
+              </span>
+              <span className="font-display text-base font-extrabold text-gold tabular-nums">
+                {formatMoney(rewardsValTotal)}
+              </span>
+            </div>
+            {stockedRewards.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {stockedRewards.map(({ item, qty, subTotal }) => (
+                  <span
+                    key={item.key}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-900 border border-amber-500/30 text-[11px] text-zinc-200 tabular-nums"
+                  >
+                    <span>💎 {item.name}</span>
+                    <span className="font-mono text-zinc-400">&times;{qty}</span>
+                    <span className="font-mono font-bold text-gold">
+                      ({formatMoney(subTotal)})
+                    </span>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

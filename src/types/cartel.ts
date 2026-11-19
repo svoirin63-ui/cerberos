@@ -75,6 +75,7 @@ export interface InventoryItem {
   key: Exclude<GearKey, 'none' | 'amu' | 'fbi' | 'uni'>;
   name: string;
   price: number;
+  category: 'tool' | 'heist_pack';
 }
 
 export type InventoryStock = Record<string, number>;

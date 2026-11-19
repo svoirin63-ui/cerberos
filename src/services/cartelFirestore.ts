@@ -702,6 +702,46 @@ export async function resetAllInventory(uid: string): Promise<void> {
   }
 }
 
+export async function saveInventoryOrderReceipt(
+  uid: string,
+  stockPatch: Record<string, number>,
+  treasuryMoneyPatch?: Partial<TreasuryMoney>
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/state/inventory`;
+  const batch = writeBatch(db);
+  const invUpdate: Record<string, unknown> = {
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+  };
+  Object.entries(stockPatch).forEach(([k, q]) => {
+    invUpdate[`stock.${k}`] = Math.max(0, Math.floor(q));
+  });
+  batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'inventory'), invUpdate);
+
+  if (
+    treasuryMoneyPatch &&
+    (treasuryMoneyPatch.legal !== undefined || treasuryMoneyPatch.illegal !== undefined)
+  ) {
+    const treasUpdate: Record<string, unknown> = {
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    };
+    if (treasuryMoneyPatch.legal !== undefined) {
+      treasUpdate.legal = Math.max(0, Number(treasuryMoneyPatch.legal) || 0);
+    }
+    if (treasuryMoneyPatch.illegal !== undefined) {
+      treasUpdate.illegal = Math.max(0, Number(treasuryMoneyPatch.illegal) || 0);
+    }
+    batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'treasury'), treasUpdate);
+  }
+
+  try {
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
 export async function saveWeaponsStock(
   uid: string,
   weapons: WeaponsStock

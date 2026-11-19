@@ -1,9 +1,12 @@
 import React, { useMemo, useState } from 'react';
 import { INVENTORY_ITEMS, REWARD_ITEMS } from '@/src/data/cartelData';
+import { OrderPreparationPanel } from '@/src/components/OrderPreparationPanel';
 import type {
   HierarchyMember,
   InventoryStock,
+  MissionStates,
   RewardStocks,
+  TreasuryMoney,
   WeaponEntry,
   WeaponsStock,
 } from '@/src/types/cartel';
@@ -19,10 +22,17 @@ interface InventoryViewProps {
   inventoryStock: InventoryStock;
   weaponsStock: WeaponsStock;
   rewardStocks: RewardStocks;
+  missionStates: MissionStates;
+  treasuryMoney: TreasuryMoney;
   members: HierarchyMember[];
   readonly: boolean;
   onUpdateStock: (key: string, delta: number) => void;
   onResetStock: () => void;
+  onReceiveOrder: (
+    orderMap: Record<string, number>,
+    debitAccount: 'none' | 'legal' | 'illegal',
+    debitAmount: number
+  ) => void;
   onSaveWeapon: (payload: {
     id?: string;
     name: string;
@@ -42,10 +52,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   inventoryStock,
   weaponsStock,
   rewardStocks,
+  missionStates,
+  treasuryMoney,
   members,
   readonly,
   onUpdateStock,
   onResetStock,
+  onReceiveOrder,
   onSaveWeapon,
   onUpdateWeaponQty,
   onDeleteWeapon,
@@ -53,6 +66,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   onUpdateRewardQty,
   onShowToast,
 }) => {
+  const [gearCategoryFilter, setGearCategoryFilter] = useState<'ALL' | 'tool' | 'heist_pack'>('ALL');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [weaponName, setWeaponName] = useState('');
   const [weaponValue, setWeaponValue] = useState('');
@@ -64,9 +78,25 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [loseArmId, setLoseArmId] = useState<string | null>(null);
 
   const inventoryValTotal = calcInventoryTotalValue(inventoryStock);
+  const toolsValTotal = INVENTORY_ITEMS.filter((i) => i.category === 'tool').reduce(
+    (sum, item) => sum + Math.max(0, Number(inventoryStock[item.key]) || 0) * item.price,
+    0
+  );
+  const heistPacksValTotal = INVENTORY_ITEMS.filter((i) => i.category === 'heist_pack').reduce(
+    (sum, item) => sum + Math.max(0, Number(inventoryStock[item.key]) || 0) * item.price,
+    0
+  );
+  const filteredGearItems = useMemo(() => {
+    if (gearCategoryFilter === 'ALL') return INVENTORY_ITEMS;
+    return INVENTORY_ITEMS.filter((i) => i.category === gearCategoryFilter);
+  }, [gearCategoryFilter]);
+
   const weaponsValTotal = calcWeaponsTotalValue(weaponsStock);
   const rewardsValTotal = calcRewardsTotalValue(rewardStocks);
-  const combinedTotal = inventoryValTotal + weaponsValTotal + rewardsValTotal;
+  const totalRewardsQty = REWARD_ITEMS.reduce(
+    (sum, item) => sum + Math.max(0, Number(rewardStocks[item.key]?.qty) || 0),
+    0
+  );
 
   const sortedMembers = useMemo(
     () =>
@@ -181,27 +211,76 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* MATÉRIEL & PACKS DE MISSION */}
+      {/* SYNTHÈSE DISSOCIÉE DES 3 PÔLES */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-charcoal/90 border border-amber-500/40 rounded-2xl p-4 flex flex-col justify-between gap-2 shadow-lg">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-bold uppercase tracking-wider text-amber-300">
+              💣 Matériel de Braquage
+            </span>
+            <span className="text-[10px] font-mono text-zinc-400">Stock opérationnel</span>
+          </div>
+          <div className="font-display text-xl font-extrabold text-gold tabular-nums">
+            {formatMoney(inventoryValTotal)}
+          </div>
+          <div className="text-[11px] font-mono text-zinc-400 tabular-nums">
+            Outillage {formatMoney(toolsValTotal)} · Packs Gros Coups {formatMoney(heistPacksValTotal)}
+          </div>
+        </div>
+
+        <div className="bg-charcoal/90 border border-crimson/45 rounded-2xl p-4 flex flex-col justify-between gap-2 shadow-lg">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-bold uppercase tracking-wider text-red-300">
+              🔫 Arsenal (Armes)
+            </span>
+            <span className="text-[10px] font-mono text-zinc-400 tabular-nums">
+              {totalWeaponsCount} arme{totalWeaponsCount > 1 ? 's' : ''}
+            </span>
+          </div>
+          <div className="font-display text-xl font-extrabold text-white tabular-nums">
+            {formatMoney(weaponsValTotal)}
+          </div>
+          <div className="text-[11px] text-zinc-400">
+            Dissocié du matériel consommable
+          </div>
+        </div>
+
+        <div className="bg-charcoal/90 border border-emerald-500/35 rounded-2xl p-4 flex flex-col justify-between gap-2 shadow-lg">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-bold uppercase tracking-wider text-emerald-300">
+              💎 Objets à Vendre (Recel)
+            </span>
+            <span className="text-[10px] font-mono text-zinc-400 tabular-nums">
+              {totalRewardsQty} objet{totalRewardsQty > 1 ? 's' : ''}
+            </span>
+          </div>
+          <div className="font-display text-xl font-extrabold text-emerald-300 tabular-nums">
+            {formatMoney(rewardsValTotal)}
+          </div>
+          <div className="text-[11px] text-zinc-400">
+            Lingots, bijoux, montres, cartes...
+          </div>
+        </div>
+      </div>
+
+      {/* MATÉRIEL DE BRAQUAGE (DISSOCIÉ DU RESTE) */}
       <div className="bg-charcoal/90 gold-border rounded-2xl p-6 shadow-xl space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-4 border-b border-zinc-800">
           <div>
             <h2 className="font-display text-xl font-bold text-white flex items-center gap-2">
-              <span className="text-gold">📦</span> Inventaire &amp; Stock du Matériel
+              <span className="text-gold">💣</span> Matériel de Braquage (Packs &amp; Outillage)
             </h2>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Indiquez les quantités de packs, d&apos;équipements, d&apos;armes et d&apos;objets du cartel (synchronisés avec le Planning et la Trésorerie).
+              Stock dédié aux braquages et missions du Planning — séparé des armes et du butin à revendre.
             </p>
           </div>
           <div className="flex items-center gap-4 flex-wrap">
             <div className="text-right">
               <span className="text-[10px] uppercase font-bold text-zinc-500 block">
-                Total Inventaire &amp; Coffre
+                Valeur Matériel de Braquage
               </span>
               <span className="font-display text-lg font-extrabold text-gold tabular-nums">
-                {formatMoney(combinedTotal)}
-              </span>
-              <span className="block text-[10px] font-mono text-zinc-400 tabular-nums">
-                Matériel {formatMoney(inventoryValTotal)} · Armes {formatMoney(weaponsValTotal)} · Objets {formatMoney(rewardsValTotal)}
+                {formatMoney(inventoryValTotal)}
               </span>
             </div>
             {!readonly && (
@@ -210,15 +289,54 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 onClick={onResetStock}
                 className="px-3.5 py-2 rounded-xl text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition border border-zinc-700 cursor-pointer"
               >
-                Remettre les packs à 0
+                Remettre le matériel à 0
               </button>
             )}
           </div>
         </div>
 
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => setGearCategoryFilter('ALL')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+              gearCategoryFilter === 'ALL'
+                ? 'bg-gold text-obsidian border-gold'
+                : 'bg-obsidian/80 text-zinc-300 border-zinc-700 hover:border-zinc-500'
+            }`}
+          >
+            Tout le matériel ({INVENTORY_ITEMS.length}) · {formatMoney(inventoryValTotal)}
+          </button>
+          <button
+            type="button"
+            onClick={() => setGearCategoryFilter('tool')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer tabular-nums ${
+              gearCategoryFilter === 'tool'
+                ? 'bg-amber-500/20 text-amber-200 border-amber-400'
+                : 'bg-obsidian/80 text-zinc-300 border-zinc-800 hover:border-zinc-600'
+            }`}
+          >
+            🧰 Outillage courant ({INVENTORY_ITEMS.filter((i) => i.category === 'tool').length}) ·{' '}
+            <span className="font-mono text-gold">{formatMoney(toolsValTotal)}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setGearCategoryFilter('heist_pack')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer tabular-nums ${
+              gearCategoryFilter === 'heist_pack'
+                ? 'bg-crimson/25 text-red-200 border-crimson-light'
+                : 'bg-obsidian/80 text-zinc-300 border-zinc-800 hover:border-zinc-600'
+            }`}
+          >
+            💣 Packs Gros Coups ({INVENTORY_ITEMS.filter((i) => i.category === 'heist_pack').length}) ·{' '}
+            <span className="font-mono text-gold">{formatMoney(heistPacksValTotal)}</span>
+          </button>
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {INVENTORY_ITEMS.map((item) => {
+          {filteredGearItems.map((item) => {
             const qty = inventoryStock[item.key] || 0;
+            const isPack = item.category === 'heist_pack';
             return (
               <div
                 key={item.key}
@@ -228,13 +346,26 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               >
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <h4 className="font-bold text-sm text-white">{item.name}</h4>
-                    <span className="text-xs font-mono tabular-nums text-gold">
-                      {formatMoney(item.price)} l&apos;unité
-                    </span>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <h4 className="font-bold text-sm text-white">{item.name}</h4>
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                      <span className="text-xs font-mono tabular-nums text-gold">
+                        {formatMoney(item.price)} l&apos;unité
+                      </span>
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${
+                          isPack
+                            ? 'bg-crimson/20 text-red-200 border-crimson/40'
+                            : 'bg-zinc-900 text-zinc-400 border-zinc-700'
+                        }`}
+                      >
+                        {isPack ? 'Gros Coup' : 'Outillage'}
+                      </span>
+                    </div>
                   </div>
                   <span
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold tabular-nums ${
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold tabular-nums shrink-0 ${
                       qty > 0
                         ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
                         : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
@@ -273,6 +404,16 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           })}
         </div>
       </div>
+
+      {/* PRÉPARATION DE COMMANDE (ANTICIPATION PAR JOURS D'AVANCE) */}
+      <OrderPreparationPanel
+        missionStates={missionStates}
+        inventoryStock={inventoryStock}
+        treasuryMoney={treasuryMoney}
+        readonly={readonly}
+        onReceiveOrder={onReceiveOrder}
+        onShowToast={onShowToast}
+      />
 
       {/* ARMURERIE & DÉTENTION DES ARMES */}
       <div className="bg-charcoal/90 gold-border rounded-2xl p-6 shadow-xl space-y-5">
@@ -545,7 +686,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           </div>
           <div className="text-right">
             <span className="text-[10px] uppercase font-bold text-zinc-500 block">
-              Valeur Marché Noir
+              Valeur à la Revente ({totalRewardsQty} objet{totalRewardsQty > 1 ? 's' : ''})
             </span>
             <span className="font-display text-lg font-extrabold text-gold tabular-nums">
               {formatMoney(rewardsValTotal)}

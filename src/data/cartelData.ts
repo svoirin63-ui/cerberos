@@ -133,18 +133,18 @@ export const TOTAL_WEEKLY_MISSIONS = WEEKLY_SCHEDULE.reduce(
 );
 
 export const INVENTORY_ITEMS: InventoryItem[] = [
-  { key: 'sup', name: 'Outils de supérettes', price: 1000 },
-  { key: 'atm', name: 'Corde lourde (ATM)', price: 500 },
-  { key: 'mai', name: 'Outil de hacking (Vol de Maison)', price: 1500 },
-  { key: 'veh', name: 'Items utilitaires (Vol de Véhicule)', price: 1500 },
-  { key: 'frg', name: 'Perceuse de forage (Fourgon)', price: 1050 },
-  { key: 'fle', name: 'Pack Banque Fleeca', price: 3300 },
-  { key: 'bij', name: 'Pack Bijouterie', price: 5600 },
-  { key: 'pal', name: 'Pack Banque de Paleto', price: 4800 },
-  { key: 'pac', name: 'Pack Pacific Bank', price: 7800 },
-  { key: 'trn', name: 'Pack Train', price: 3800 },
-  { key: 'yac', name: 'Pack Yacht', price: 4000 },
-  { key: 'bob', name: 'Pack Bobcat', price: 4500 },
+  { key: 'sup', name: 'Outils de supérettes', price: 1000, category: 'tool' },
+  { key: 'atm', name: 'Corde lourde (ATM)', price: 500, category: 'tool' },
+  { key: 'mai', name: 'Outil de hacking (Vol de Maison)', price: 1500, category: 'tool' },
+  { key: 'veh', name: 'Items utilitaires (Vol de Véhicule)', price: 1500, category: 'tool' },
+  { key: 'frg', name: 'Perceuse de forage (Fourgon)', price: 1050, category: 'tool' },
+  { key: 'fle', name: 'Pack Banque Fleeca', price: 3300, category: 'heist_pack' },
+  { key: 'bij', name: 'Pack Bijouterie', price: 5600, category: 'heist_pack' },
+  { key: 'pal', name: 'Pack Banque de Paleto', price: 4800, category: 'heist_pack' },
+  { key: 'pac', name: 'Pack Pacific Bank', price: 7800, category: 'heist_pack' },
+  { key: 'trn', name: 'Pack Train', price: 3800, category: 'heist_pack' },
+  { key: 'yac', name: 'Pack Yacht', price: 4000, category: 'heist_pack' },
+  { key: 'bob', name: 'Pack Bobcat', price: 4500, category: 'heist_pack' },
 ];
 
 export const REWARD_ITEMS: RewardItem[] = [
