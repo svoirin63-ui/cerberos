@@ -2,6 +2,7 @@ import React from 'react';
 import { INVENTORY_ITEMS, REWARD_ITEMS, WEEKLY_SCHEDULE } from '@/src/data/cartelData';
 import type {
   HierarchyMember,
+  InventoryPrices,
   InventoryStock,
   LostWeaponRecord,
   MissionStates,
@@ -15,6 +16,7 @@ import {
   calcTotalWealth,
   calcWeaponsTotalValue,
   formatMoney,
+  getInventoryItemPrice,
   getMissionEntry,
   getWeaponHolderName,
   missionFin,
@@ -24,6 +26,7 @@ interface TreasuryViewProps {
   treasuryMoney: TreasuryMoney;
   rewardStocks: RewardStocks;
   inventoryStock: InventoryStock;
+  inventoryPrices?: InventoryPrices;
   weaponsStock: WeaponsStock;
   missionStates: MissionStates;
   weaponsLossAmount: number;
@@ -32,12 +35,14 @@ interface TreasuryViewProps {
   onUpdateTreasuryMoney: (type: keyof TreasuryMoney, val: number) => void;
   onUpdateRewardQty: (key: string, delta: number) => void;
   onUpdateRewardValue: (key: string, val: number) => void;
+  onApplyOfficialRewardPrices?: () => void;
 }
 
 export const TreasuryView: React.FC<TreasuryViewProps> = ({
   treasuryMoney,
   rewardStocks,
   inventoryStock,
+  inventoryPrices,
   weaponsStock,
   missionStates,
   weaponsLossAmount,
@@ -46,9 +51,10 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
   onUpdateTreasuryMoney,
   onUpdateRewardQty,
   onUpdateRewardValue,
+  onApplyOfficialRewardPrices,
 }) => {
   const rewardsValTotal = calcRewardsTotalValue(rewardStocks);
-  const inventoryValTotal = calcInventoryTotalValue(inventoryStock);
+  const inventoryValTotal = calcInventoryTotalValue(inventoryStock, inventoryPrices);
   const weaponsValTotal = calcWeaponsTotalValue(weaponsStock);
   const totalWeaponsCount = Object.values(weaponsStock).reduce(
     (sum, w) => sum + Math.max(0, Number(w?.qty) || 0),
@@ -58,6 +64,7 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
     treasuryMoney,
     rewardStocks,
     inventoryStock,
+    inventoryPrices,
     weaponsStock,
   });
   const stockedItems = INVENTORY_ITEMS.filter(
@@ -79,7 +86,7 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
   const missionLostWeapons: Array<LostWeaponRecord & { missionName: string }> = [];
   WEEKLY_SCHEDULE.forEach((day) => {
     day.missions.forEach((m) => {
-      const f = missionFin(m, missionStates);
+      const f = missionFin(m, missionStates, inventoryPrices);
       weekMaterialCost += f.cost;
       weekExtraLoss += f.extra;
       const entry = getMissionEntry(missionStates, m.id);
@@ -234,6 +241,7 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
                 <div className="flex flex-wrap gap-1.5">
                   {stockedItems.map((item) => {
                     const qty = Number(inventoryStock[item.key]) || 0;
+                    const unitPrice = getInventoryItemPrice(item.key, inventoryPrices);
                     return (
                       <span
                         key={item.key}
@@ -242,7 +250,7 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
                         <span>📦 {item.name}</span>
                         <span className="font-mono text-zinc-400">&times;{qty}</span>
                         <span className="font-mono font-bold text-gold">
-                          ({formatMoney(qty * item.price)})
+                          ({formatMoney(qty * unitPrice)})
                         </span>
                       </span>
                     );
@@ -325,9 +333,25 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
             <h3 className="font-display text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
               <span className="text-gold">✨</span> Actifs &amp; Objets du Marché Noir (À Vendre)
             </h3>
-            <p className="text-[11px] text-zinc-400">
-              Tarifs officiels du receleur (Lingot d&apos;or = 200 $)
-            </p>
+            <div className="flex items-center gap-3 flex-wrap">
+              <p className="text-[11px] text-zinc-400">
+                Tarifs officiels du receleur (Lingot d&apos;or = 180 $)
+              </p>
+              {!readonly &&
+                onApplyOfficialRewardPrices &&
+                REWARD_ITEMS.some((item) => {
+                  const stored = rewardStocks[item.key]?.val;
+                  return stored !== undefined && Number(stored) !== item.defaultVal;
+                }) && (
+                  <button
+                    type="button"
+                    onClick={onApplyOfficialRewardPrices}
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-gold/20 hover:bg-gold hover:text-obsidian text-gold-light border border-gold/50 transition cursor-pointer"
+                  >
+                    Réinitialiser aux tarifs officiels
+                  </button>
+                )}
+            </div>
           </div>
 
           <div className="bg-obsidian/70 border border-amber-500/35 rounded-xl p-3.5 space-y-2.5">

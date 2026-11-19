@@ -8,7 +8,12 @@ import {
   updateDoc,
   writeBatch,
 } from 'firebase/firestore';
-import { DEFAULT_SECRET_CODE, HIER_DEFAULTS } from '@/src/data/cartelData';
+import {
+  DAY_NAMES,
+  DEFAULT_SECRET_CODE,
+  DISTINCTION_DEFS,
+  HIER_DEFAULTS,
+} from '@/src/data/cartelData';
 import {
   ADMIN_EMAIL,
   CARTEL_ID,
@@ -17,9 +22,14 @@ import {
   OperationType,
 } from '@/src/firebase';
 import type {
+  DistinctionKey,
   HierarchyMember,
+  InventoryPrices,
   InventoryStock,
   LostWeaponRecord,
+  MemberRankingAdjustment,
+  MemberRankingsMap,
+  MissionScheduleMeta,
   MissionStateEntry,
   MissionStates,
   RewardStockEntry,
@@ -185,6 +195,84 @@ function sanitizeWeaponsMap(raw: unknown): WeaponsStock {
   return clean;
 }
 
+function sanitizeScheduleMeta(
+  rawOverrides: unknown,
+  rawUnplaced: unknown,
+  rawLastDate: unknown,
+  rawLastAt: unknown
+): MissionScheduleMeta {
+  const validDays = new Set(DAY_NAMES);
+  const scheduleOverrides: Record<string, string> = {};
+  if (rawOverrides && typeof rawOverrides === 'object') {
+    Object.entries(rawOverrides as Record<string, unknown>)
+      .slice(0, 120)
+      .forEach(([k, v]) => {
+        const cleanKey = k.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+        if (cleanKey && typeof v === 'string' && validDays.has(v)) {
+          scheduleOverrides[cleanKey] = v;
+        }
+      });
+  }
+
+  const unplacedMissionIds: string[] = Array.isArray(rawUnplaced)
+    ? rawUnplaced
+        .filter((id): id is string => typeof id === 'string')
+        .map((id) => id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64))
+        .filter(Boolean)
+        .slice(0, 120)
+    : [];
+
+  const lastRecalcDate =
+    typeof rawLastDate === 'string' && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(rawLastDate)
+      ? rawLastDate.slice(0, 20)
+      : '';
+  const lastRecalcAt = typeof rawLastAt === 'string' ? rawLastAt.slice(0, 40) : '';
+
+  return {
+    scheduleOverrides,
+    unplacedMissionIds,
+    lastRecalcDate,
+    lastRecalcAt,
+  };
+}
+
+function sanitizeInventoryPrices(raw: unknown): InventoryPrices {
+  if (!raw || typeof raw !== 'object') return {};
+  const clean: InventoryPrices = {};
+  Object.entries(raw as Record<string, unknown>)
+    .slice(0, 40)
+    .forEach(([k, val]) => {
+      const key = k.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
+      if (!key) return;
+      const num = Number(val);
+      if (Number.isFinite(num) && num >= 0) {
+        clean[key] = Math.round(num);
+      }
+    });
+  return clean;
+}
+
+function sanitizeMemberRankings(raw: unknown): MemberRankingsMap {
+  if (!raw || typeof raw !== 'object') return {};
+  const validBadges = new Set(DISTINCTION_DEFS.map((d) => d.key));
+  const clean: MemberRankingsMap = {};
+  Object.entries(raw as Record<string, MemberRankingAdjustment>)
+    .slice(0, 100)
+    .forEach(([memberId, adj]) => {
+      const id = memberId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+      if (!id || !adj || typeof adj !== 'object') return;
+      const bonusPoints = Math.trunc(Number(adj.bonusPoints) || 0);
+      const note = typeof adj.note === 'string' ? adj.note.trim().slice(0, 160) : '';
+      const manualBadges = Array.isArray(adj.manualBadges)
+        ? adj.manualBadges.filter((b): b is DistinctionKey => validBadges.has(b)).slice(0, 6)
+        : [];
+      if (bonusPoints !== 0 || note.length > 0 || manualBadges.length > 0) {
+        clean[id] = { bonusPoints, note, manualBadges };
+      }
+    });
+  return clean;
+}
+
 export async function bootstrapAndJoinCartel(
   user: User,
   seed: LocalSeedData
@@ -269,6 +357,7 @@ export async function bootstrapAndJoinCartel(
         await setDoc(inventoryRef, {
           stock: seed.inventoryStock || {},
           weapons: {},
+          prices: {},
           updatedAt: serverTimestamp(),
           updatedBy: user.uid,
         });
@@ -312,6 +401,7 @@ export async function bootstrapAndJoinCartel(
           members: membersArrayToMap(
             seed.hierMembers?.length > 0 ? seed.hierMembers : HIER_DEFAULTS
           ),
+          rankings: {},
           updatedAt: serverTimestamp(),
           updatedBy: user.uid,
         });
@@ -354,7 +444,9 @@ export function subscribeCartelState(
   uid: string,
   callbacks: {
     onMissions: (ms: MissionStates) => void;
+    onScheduleMeta?: (meta: MissionScheduleMeta) => void;
     onInventory: (stock: InventoryStock) => void;
+    onInventoryPrices?: (prices: InventoryPrices) => void;
     onWeapons: (weapons: WeaponsStock) => void;
     onTreasury: (data: {
       treasuryMoney: TreasuryMoney;
@@ -362,6 +454,7 @@ export function subscribeCartelState(
       weaponsLossAmount: number;
     }) => void;
     onHierarchy: (members: HierarchyMember[]) => void;
+    onMemberRankings?: (rankings: MemberRankingsMap) => void;
     onRole: (role: MemberRole) => void;
     onError: (err: Error) => void;
   }
@@ -378,6 +471,14 @@ export function subscribeCartelState(
           ? (data.entries as Record<string, MissionStateEntry>)
           : {};
       callbacks.onMissions({ __week: week, ...entries });
+      callbacks.onScheduleMeta?.(
+        sanitizeScheduleMeta(
+          data.scheduleOverrides,
+          data.unplacedMissionIds,
+          data.lastRecalcDate,
+          data.lastRecalcAt
+        )
+      );
     },
     (error) => {
       try {
@@ -398,6 +499,7 @@ export function subscribeCartelState(
           ? (data.stock as InventoryStock)
           : {};
       callbacks.onInventory(stock);
+      callbacks.onInventoryPrices?.(sanitizeInventoryPrices(data.prices));
       callbacks.onWeapons(sanitizeWeaponsMap(data.weapons));
     },
     (error) => {
@@ -441,6 +543,7 @@ export function subscribeCartelState(
       if (!snap.exists()) return;
       const data = snap.data();
       callbacks.onHierarchy(membersMapToArray(data.members));
+      callbacks.onMemberRankings?.(sanitizeMemberRankings(data.rankings));
     },
     (error) => {
       try {
@@ -568,10 +671,36 @@ export async function saveMissionWithSideEffects(
   }
 }
 
+export async function saveSchedulePlan(
+  uid: string,
+  meta: MissionScheduleMeta
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/state/missions`;
+  const clean = sanitizeScheduleMeta(
+    meta.scheduleOverrides,
+    meta.unplacedMissionIds,
+    meta.lastRecalcDate,
+    meta.lastRecalcAt
+  );
+  try {
+    await updateDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'missions'), {
+      scheduleOverrides: clean.scheduleOverrides,
+      unplacedMissionIds: clean.unplacedMissionIds,
+      lastRecalcDate: clean.lastRecalcDate,
+      lastRecalcAt: clean.lastRecalcAt,
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
 export async function saveAllMissionEntries(
   uid: string,
   week: string,
-  entries: Record<string, MissionStateEntry>
+  entries: Record<string, MissionStateEntry>,
+  scheduleMeta?: MissionScheduleMeta
 ): Promise<void> {
   const path = `cartels/${CARTEL_ID}/state/missions`;
   const cleanEntries: Record<string, MissionStateEntry> = {};
@@ -579,13 +708,26 @@ export async function saveAllMissionEntries(
     if (k === '__week' || !v) return;
     cleanEntries[k] = sanitizeMissionEntry(v);
   });
+  const payload: Record<string, unknown> = {
+    week,
+    entries: cleanEntries,
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+  };
+  if (scheduleMeta) {
+    const clean = sanitizeScheduleMeta(
+      scheduleMeta.scheduleOverrides,
+      scheduleMeta.unplacedMissionIds,
+      scheduleMeta.lastRecalcDate,
+      scheduleMeta.lastRecalcAt
+    );
+    payload.scheduleOverrides = clean.scheduleOverrides;
+    payload.unplacedMissionIds = clean.unplacedMissionIds;
+    payload.lastRecalcDate = clean.lastRecalcDate;
+    payload.lastRecalcAt = clean.lastRecalcAt;
+  }
   try {
-    await updateDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'missions'), {
-      week,
-      entries: cleanEntries,
-      updatedAt: serverTimestamp(),
-      updatedBy: uid,
-    });
+    await updateDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'missions'), payload);
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -681,6 +823,25 @@ export async function saveInventoryItem(
   try {
     await updateDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'inventory'), {
       [`stock.${key}`]: Math.max(0, Math.floor(qty)),
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function saveInventoryItemPrice(
+  uid: string,
+  key: string,
+  price: number
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/state/inventory`;
+  const cleanKey = key.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
+  if (!cleanKey) return;
+  try {
+    await updateDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'inventory'), {
+      [`prices.${cleanKey}`]: Math.max(0, Math.round(Number(price) || 0)),
       updatedAt: serverTimestamp(),
       updatedBy: uid,
     });
@@ -819,6 +980,33 @@ export async function saveRewardItem(
   }
 }
 
+export async function saveRewardPricesBatch(
+  uid: string,
+  entries: Record<string, RewardStockEntry>
+): Promise<void> {
+  const keys = Object.keys(entries);
+  if (keys.length === 0) return;
+  const path = `cartels/${CARTEL_ID}/state/treasury`;
+  const payload: Record<string, unknown> = {
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+  };
+  keys.forEach((key) => {
+    const cleanKey = key.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+    if (!cleanKey) return;
+    const entry = entries[key];
+    payload[`rewards.${cleanKey}`] = {
+      qty: Math.max(0, Math.floor(Number(entry.qty) || 0)),
+      val: Math.max(0, Number(entry.val) || 0),
+    };
+  });
+  try {
+    await updateDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'treasury'), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
 export async function saveWeaponsLoss(uid: string, amount: number): Promise<void> {
   const path = `cartels/${CARTEL_ID}/state/treasury`;
   try {
@@ -840,6 +1028,22 @@ export async function saveHierarchyMembers(
   try {
     await updateDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'hierarchy'), {
       members: membersArrayToMap(members),
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function saveMemberRankings(
+  uid: string,
+  rankings: MemberRankingsMap
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/state/hierarchy`;
+  try {
+    await updateDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'hierarchy'), {
+      rankings: sanitizeMemberRankings(rankings),
       updatedAt: serverTimestamp(),
       updatedBy: uid,
     });

@@ -1,20 +1,27 @@
 import React, { useMemo, useState } from 'react';
 import { DAY_NAMES, INVENTORY_ITEMS, WEEKLY_SCHEDULE } from '@/src/data/cartelData';
 import type {
+  InventoryPrices,
   InventoryStock,
+  MissionScheduleMeta,
   MissionStates,
   TreasuryMoney,
 } from '@/src/types/cartel';
 import {
+  calcStockAutonomy,
   formatMoney,
+  getInventoryItemPrice,
   getMissionEntry,
   getStatus,
   isTodayName,
 } from '@/src/utils/finance';
+import { getEffectiveSchedule } from '@/src/utils/schedule';
 
 interface OrderPreparationPanelProps {
   missionStates: MissionStates;
+  scheduleMeta?: MissionScheduleMeta;
   inventoryStock: InventoryStock;
+  inventoryPrices?: InventoryPrices;
   treasuryMoney: TreasuryMoney;
   readonly: boolean;
   onReceiveOrder: (
@@ -29,7 +36,9 @@ const DAY_PRESETS = [1, 2, 3, 5, 7, 14];
 
 export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
   missionStates,
+  scheduleMeta,
   inventoryStock,
+  inventoryPrices,
   treasuryMoney,
   readonly,
   onReceiveOrder,
@@ -50,6 +59,23 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
   const safeStartDay = DAY_NAMES.includes(startDay) ? startDay : detectedToday;
   const startIdx = Math.max(0, DAY_NAMES.indexOf(safeStartDay));
 
+  const effectiveDays = useMemo(
+    () => getEffectiveSchedule(missionStates, scheduleMeta).days,
+    [missionStates, scheduleMeta]
+  );
+
+  const autonomy = useMemo(
+    () =>
+      calcStockAutonomy({
+        inventoryStock,
+        missionStates,
+        scheduleMeta,
+        startDayName: safeStartDay,
+        excludeDone,
+      }),
+    [inventoryStock, missionStates, scheduleMeta, safeStartDay, excludeDone]
+  );
+
   const { coveredDays, neededByKey } = useMemo(() => {
     const daysList: Array<{ day: string; isNextCycle: boolean; missionCount: number }> = [];
     const needs: Record<string, number> = {};
@@ -58,7 +84,9 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
       const rawIdx = startIdx + i;
       const dayIdx = rawIdx % 7;
       const isNextCycle = rawIdx >= 7;
-      const daySchedule = WEEKLY_SCHEDULE[dayIdx];
+      const daySchedule = isNextCycle
+        ? WEEKLY_SCHEDULE[dayIdx]
+        : effectiveDays[dayIdx] || WEEKLY_SCHEDULE[dayIdx];
       if (!daySchedule) continue;
 
       let countedMissions = 0;
@@ -83,28 +111,32 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
     }
 
     return { coveredDays: daysList, neededByKey: needs };
-  }, [daysAhead, startIdx, excludeDone, missionStates]);
+  }, [daysAhead, startIdx, excludeDone, missionStates, effectiveDays]);
 
   const rows = useMemo(() => {
     return INVENTORY_ITEMS.map((item) => {
+      const unitPrice = getInventoryItemPrice(item.key, inventoryPrices);
       const needed = neededByKey[item.key] || 0;
       const inStock = Math.max(0, Math.floor(Number(inventoryStock[item.key]) || 0));
       const shortage = Math.max(0, needed - inStock);
       const surplus = Math.max(0, inStock - needed);
       const manual = manualDeltas[item.key] || 0;
       const orderQty = Math.max(0, shortage + manual);
-      const orderCost = orderQty * item.price;
+      const orderCost = orderQty * unitPrice;
+      const autoInfo = autonomy.byKey[item.key];
       return {
         item,
+        unitPrice,
         needed,
         inStock,
         shortage,
         surplus,
         orderQty,
         orderCost,
+        autoInfo,
       };
     });
-  }, [neededByKey, inventoryStock, manualDeltas]);
+  }, [neededByKey, inventoryStock, inventoryPrices, manualDeltas, autonomy]);
 
   const visibleRows = useMemo(() => {
     if (showFullCatalog) return rows;
@@ -159,7 +191,7 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
       rows
         .filter((r) => r.orderQty > 0)
         .forEach((r) => {
-          text += `- ${r.orderQty}x ${r.item.name} (${formatMoney(r.item.price)}/u) = ${formatMoney(r.orderCost)}\n`;
+          text += `- ${r.orderQty}x ${r.item.name} (${formatMoney(r.unitPrice)}/u) = ${formatMoney(r.orderCost)}\n`;
         });
       text += `\nTotal pièces : ${orderSummary.totalUnits}\n`;
       text += `COÛT TOTAL COMMANDE : ${formatMoney(orderSummary.totalCost)}\n`;
@@ -199,14 +231,14 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
   };
 
   return (
-    <div className="bg-charcoal/90 gold-border rounded-2xl p-6 shadow-xl space-y-5">
-      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 pb-4 border-b border-zinc-800">
+    <div id="order-prep-panel" className="bg-charcoal/95 gold-border rounded-2xl p-6 shadow-xl space-y-5">
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 pb-4 border-b border-bronze/40">
         <div>
           <h2 className="font-display text-xl font-bold text-white flex items-center gap-2">
             <span className="text-gold">🛒</span> Préparation de Commande (Anticipation)
           </h2>
           <p className="text-xs text-zinc-400 mt-0.5">
-            Calcule automatiquement le matériel et les packs à commander selon le nombre de jours que vous voulez couvrir d&apos;avance, déduction faite de votre stock actuel.
+            Calcule automatiquement le matériel et les packs à commander selon le nombre de jours souhaités d&apos;avance, déduction faite de votre stock actuel.
           </p>
         </div>
         <div className="text-right shrink-0">
@@ -225,19 +257,19 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
       </div>
 
       {/* PARAMÈTRES DE PRÉPARATION */}
-      <div className="bg-obsidian/80 border border-zinc-800 rounded-xl p-4 space-y-3.5">
+      <div className="bg-obsidian/80 border border-bronze/40 rounded-xl p-4 space-y-3.5">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-end">
           <div className="space-y-1.5">
-            <label className="text-[11px] font-bold uppercase tracking-wider text-amber-300 block">
+            <label className="text-[11px] font-bold uppercase tracking-wider text-gold-light block">
               Nombre de jours d&apos;avance souhaité
             </label>
             <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex items-center gap-1 bg-zinc-950 border border-zinc-700 rounded-lg p-1">
+              <div className="flex items-center gap-1 bg-charcoal border border-bronze/60 rounded-lg p-1">
                 <button
                   type="button"
                   disabled={daysAhead <= 1}
                   onClick={() => setDaysAhead((d) => Math.max(1, d - 1))}
-                  className="w-7 h-7 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-35 text-white font-bold flex items-center justify-center cursor-pointer"
+                  className="w-7 h-7 rounded bg-gunmetal hover:bg-bronze disabled:opacity-35 text-white font-bold flex items-center justify-center cursor-pointer"
                 >
                   -
                 </button>
@@ -248,7 +280,7 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
                   type="button"
                   disabled={daysAhead >= 14}
                   onClick={() => setDaysAhead((d) => Math.min(14, d + 1))}
-                  className="w-7 h-7 rounded bg-zinc-800 hover:bg-gold hover:text-obsidian disabled:opacity-35 text-white font-bold flex items-center justify-center cursor-pointer"
+                  className="w-7 h-7 rounded bg-gunmetal hover:bg-gold hover:text-obsidian disabled:opacity-35 text-white font-bold flex items-center justify-center cursor-pointer"
                 >
                   +
                 </button>
@@ -262,7 +294,7 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
                     className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition cursor-pointer ${
                       daysAhead === preset
                         ? 'bg-gold text-obsidian border-gold'
-                        : 'bg-zinc-950 text-zinc-300 border-zinc-700 hover:border-zinc-500'
+                        : 'bg-charcoal text-zinc-300 border-gunmetal hover:border-bronze'
                     }`}
                   >
                     {preset}j
@@ -279,7 +311,7 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
             <select
               value={safeStartDay}
               onChange={(e) => setStartDay(e.target.value)}
-              className="w-full bg-zinc-950 border border-zinc-700 focus:border-gold rounded-lg px-3 py-2 text-xs text-white focus:outline-none"
+              className="w-full bg-charcoal border border-bronze/60 focus:border-gold rounded-lg px-3 py-2 text-xs text-white focus:outline-none"
             >
               {DAY_NAMES.map((day) => (
                 <option key={day} value={day}>
@@ -313,21 +345,21 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
         </div>
 
         {/* JOURS COUVERTS */}
-        <div className="pt-2.5 border-t border-zinc-800/80 flex items-center gap-1.5 flex-wrap">
+        <div className="pt-2.5 border-t border-bronze/30 flex items-center gap-1.5 flex-wrap">
           <span className="text-[11px] font-semibold text-zinc-400 mr-1">
             Période couverte :
           </span>
           {coveredDays.map((d, idx) => (
             <span
               key={`${d.day}-${idx}`}
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium border tabular-nums ${
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border tabular-nums ${
                 d.isNextCycle
-                  ? 'bg-amber-500/10 text-amber-200 border-amber-500/30'
-                  : 'bg-zinc-900 text-zinc-200 border-zinc-700'
+                  ? 'bg-gold/10 text-gold-light border-gold/30'
+                  : 'bg-charcoal text-zinc-200 border-gunmetal'
               }`}
             >
               <span>{d.day}</span>
-              {d.isNextCycle && <span className="text-[9px] text-amber-300">(Sem.+1)</span>}
+              {d.isNextCycle && <span className="text-[9px] text-gold">(Sem.+1)</span>}
             </span>
           ))}
         </div>
@@ -342,8 +374,9 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="border-b border-zinc-800 text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+              <tr className="border-b border-bronze/45 text-[10px] font-bold uppercase tracking-wider text-zinc-400">
                 <th className="py-2.5 px-3">Matériel / Pack</th>
+                <th className="py-2.5 px-3 text-center">Autonomie</th>
                 <th className="py-2.5 px-3 text-center">Besoin ({daysAhead}j)</th>
                 <th className="py-2.5 px-3 text-center">En stock</th>
                 <th className="py-2.5 px-3 text-center">Manquant</th>
@@ -351,34 +384,44 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
                 <th className="py-2.5 px-3 text-right">Coût</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-zinc-800/60 text-xs tabular-nums">
+            <tbody className="divide-y divide-bronze/25 text-xs tabular-nums">
               {visibleRows.map((r) => {
                 const isPack = r.item.category === 'heist_pack';
+                const autoDays = r.autoInfo?.coveredDays ?? 0;
+                const autoOver30 = r.autoInfo?.hasMoreThan30 ?? false;
+                const isUnscheduled = (r.autoInfo?.neededPerWeek || 0) === 0;
                 return (
                   <tr
                     key={r.item.key}
                     className={`transition ${
                       r.orderQty > 0
-                        ? 'bg-amber-500/5 hover:bg-amber-500/10'
-                        : 'hover:bg-zinc-800/30'
+                        ? 'bg-gold/5 hover:bg-gold/10'
+                        : 'hover:bg-slateDark/60'
                     }`}
                   >
                     <td className="py-2.5 px-3">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-semibold text-white">{r.item.name}</span>
-                        <span
-                          className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${
-                            isPack
-                              ? 'bg-crimson/20 text-red-200 border-crimson/40'
-                              : 'bg-zinc-900 text-zinc-300 border-zinc-700'
-                          }`}
-                        >
-                          {isPack ? '💣 Gros Coup' : '🧰 Outillage'}
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+                          · {isPack ? 'Gros Coup' : 'Outillage'}
                         </span>
                       </div>
                       <span className="text-[10px] font-mono text-zinc-400">
-                        {formatMoney(r.item.price)} / unité
+                        {r.unitPrice > 0 ? `${formatMoney(r.unitPrice)} / u` : 'Prix à définir'}
                       </span>
+                    </td>
+                    <td className="py-2.5 px-3 text-center font-mono">
+                      {isUnscheduled ? (
+                        <span className="text-zinc-500 text-[11px]">Libre</span>
+                      ) : autoOver30 ? (
+                        <span className="text-emerald-300 font-bold text-[11px]">30+ j</span>
+                      ) : autoDays === 0 ? (
+                        <span className="text-crimson-light font-bold text-[11px]">0 j</span>
+                      ) : autoDays < 3 ? (
+                        <span className="text-amber-300 font-bold text-[11px]">{autoDays} j</span>
+                      ) : (
+                        <span className="text-emerald-300 font-semibold text-[11px]">{autoDays} j</span>
+                      )}
                     </td>
                     <td className="py-2.5 px-3 text-center font-mono font-bold text-zinc-200">
                       {r.needed}
@@ -398,7 +441,7 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
                     </td>
                     <td className="py-2.5 px-3 text-center font-mono">
                       {r.shortage > 0 ? (
-                        <span className="px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 border border-red-500/40 font-bold text-[11px]">
+                        <span className="text-crimson-light font-bold text-[11px]">
                           -{r.shortage}
                         </span>
                       ) : (
@@ -413,7 +456,7 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
                           type="button"
                           disabled={r.orderQty <= 0}
                           onClick={() => adjustOrderQty(r.item.key, r.shortage, -1)}
-                          className="w-6 h-6 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-35 text-white font-bold flex items-center justify-center cursor-pointer"
+                          className="w-6 h-6 rounded bg-gunmetal hover:bg-bronze disabled:opacity-35 text-white font-bold flex items-center justify-center cursor-pointer"
                         >
                           -
                         </button>
@@ -427,7 +470,7 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
                         <button
                           type="button"
                           onClick={() => adjustOrderQty(r.item.key, r.shortage, 1)}
-                          className="w-6 h-6 rounded bg-zinc-800 hover:bg-gold hover:text-obsidian text-white font-bold flex items-center justify-center cursor-pointer"
+                          className="w-6 h-6 rounded bg-gunmetal hover:bg-gold hover:text-obsidian text-white font-bold flex items-center justify-center cursor-pointer"
                         >
                           +
                         </button>
@@ -445,7 +488,7 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
       )}
 
       {/* ACTIONS DE COMMANDE */}
-      <div className="bg-obsidian/85 border border-gold/30 rounded-xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+      <div className="bg-obsidian/85 border border-gold/35 rounded-xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
         <div className="text-xs space-y-0.5 tabular-nums">
           {orderSummary.totalUnits === 0 ? (
             <span className="text-emerald-300 font-semibold">
@@ -459,7 +502,7 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
               </div>
               <div className="text-[11px] text-zinc-400">
                 Coût total estimé :{' '}
-                <strong className="font-mono text-amber-300">
+                <strong className="font-mono text-gold-light">
                   {formatMoney(orderSummary.totalCost)}
                 </strong>
               </div>
@@ -471,7 +514,7 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
           <button
             type="button"
             onClick={handleCopyOrder}
-            className="px-3.5 py-2 rounded-xl text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-gold-light border border-gold/40 transition cursor-pointer"
+            className="px-3.5 py-2 rounded-xl text-xs font-bold bg-charcoal hover:bg-gunmetal text-gold-light border border-gold/40 transition cursor-pointer"
           >
             📋 Copier la commande
           </button>
@@ -483,7 +526,7 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
                 onChange={(e) =>
                   setDebitAccount(e.target.value as 'none' | 'legal' | 'illegal')
                 }
-                className="bg-zinc-950 border border-zinc-700 focus:border-gold rounded-xl px-2.5 py-2 text-xs text-zinc-200 focus:outline-none"
+                className="bg-charcoal border border-bronze/60 focus:border-gold rounded-xl px-2.5 py-2 text-xs text-zinc-200 focus:outline-none"
                 title="Débiter ou non le coût de la commande de la Trésorerie"
               >
                 <option value="none">Stock seul (ne pas débiter la caisse)</option>

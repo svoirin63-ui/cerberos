@@ -1,9 +1,12 @@
 import React, { useMemo, useState } from 'react';
+import { Clock, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { INVENTORY_ITEMS, REWARD_ITEMS } from '@/src/data/cartelData';
 import { OrderPreparationPanel } from '@/src/components/OrderPreparationPanel';
 import type {
   HierarchyMember,
+  InventoryPrices,
   InventoryStock,
+  MissionScheduleMeta,
   MissionStates,
   RewardStocks,
   TreasuryMoney,
@@ -13,20 +16,25 @@ import type {
 import {
   calcInventoryTotalValue,
   calcRewardsTotalValue,
+  calcStockAutonomy,
   calcWeaponsTotalValue,
   formatMoney,
+  getInventoryItemPrice,
   getWeaponHolderName,
 } from '@/src/utils/finance';
 
 interface InventoryViewProps {
   inventoryStock: InventoryStock;
+  inventoryPrices: InventoryPrices;
   weaponsStock: WeaponsStock;
   rewardStocks: RewardStocks;
   missionStates: MissionStates;
+  scheduleMeta?: MissionScheduleMeta;
   treasuryMoney: TreasuryMoney;
   members: HierarchyMember[];
   readonly: boolean;
   onUpdateStock: (key: string, delta: number) => void;
+  onUpdateItemPrice: (key: string, price: number) => void;
   onResetStock: () => void;
   onReceiveOrder: (
     orderMap: Record<string, number>,
@@ -50,13 +58,16 @@ interface InventoryViewProps {
 
 export const InventoryView: React.FC<InventoryViewProps> = ({
   inventoryStock,
+  inventoryPrices,
   weaponsStock,
   rewardStocks,
   missionStates,
+  scheduleMeta,
   treasuryMoney,
   members,
   readonly,
   onUpdateStock,
+  onUpdateItemPrice,
   onResetStock,
   onReceiveOrder,
   onSaveWeapon,
@@ -67,6 +78,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   onShowToast,
 }) => {
   const [gearCategoryFilter, setGearCategoryFilter] = useState<'ALL' | 'tool' | 'heist_pack'>('ALL');
+  const [showAutonomyBoard, setShowAutonomyBoard] = useState<boolean>(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [weaponName, setWeaponName] = useState('');
   const [weaponValue, setWeaponValue] = useState('');
@@ -77,15 +89,33 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [delArmId, setDelArmId] = useState<string | null>(null);
   const [loseArmId, setLoseArmId] = useState<string | null>(null);
 
-  const inventoryValTotal = calcInventoryTotalValue(inventoryStock);
+  const inventoryValTotal = calcInventoryTotalValue(inventoryStock, inventoryPrices);
   const toolsValTotal = INVENTORY_ITEMS.filter((i) => i.category === 'tool').reduce(
-    (sum, item) => sum + Math.max(0, Number(inventoryStock[item.key]) || 0) * item.price,
+    (sum, item) =>
+      sum +
+      Math.max(0, Number(inventoryStock[item.key]) || 0) *
+        getInventoryItemPrice(item.key, inventoryPrices),
     0
   );
   const heistPacksValTotal = INVENTORY_ITEMS.filter((i) => i.category === 'heist_pack').reduce(
-    (sum, item) => sum + Math.max(0, Number(inventoryStock[item.key]) || 0) * item.price,
+    (sum, item) =>
+      sum +
+      Math.max(0, Number(inventoryStock[item.key]) || 0) *
+        getInventoryItemPrice(item.key, inventoryPrices),
     0
   );
+
+  const autonomy = useMemo(
+    () =>
+      calcStockAutonomy({
+        inventoryStock,
+        missionStates,
+        scheduleMeta,
+        excludeDone: true,
+      }),
+    [inventoryStock, missionStates, scheduleMeta]
+  );
+
   const filteredGearItems = useMemo(() => {
     if (gearCategoryFilter === 'ALL') return INVENTORY_ITEMS;
     return INVENTORY_ITEMS.filter((i) => i.category === gearCategoryFilter);
@@ -209,13 +239,17 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     onLoseWeaponGlobal(id);
   };
 
+  const globalAutonomyLabel = autonomy.allOver30Days
+    ? '30+ jours'
+    : `${autonomy.minDaysCovered} jour${autonomy.minDaysCovered > 1 ? 's' : ''}`;
+
   return (
     <div className="space-y-6">
       {/* SYNTHÈSE DISSOCIÉE DES 3 PÔLES */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-charcoal/90 border border-amber-500/40 rounded-2xl p-4 flex flex-col justify-between gap-2 shadow-lg">
+        <div className="bg-charcoal/95 border border-gold/45 rounded-2xl p-4 flex flex-col justify-between gap-2 shadow-lg">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-amber-300">
+            <span className="text-xs font-bold uppercase tracking-wider text-gold-light">
               💣 Matériel de Braquage
             </span>
             <span className="text-[10px] font-mono text-zinc-400">Stock opérationnel</span>
@@ -228,9 +262,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           </div>
         </div>
 
-        <div className="bg-charcoal/90 border border-crimson/45 rounded-2xl p-4 flex flex-col justify-between gap-2 shadow-lg">
+        <div className="bg-charcoal/95 border border-crimson/55 rounded-2xl p-4 flex flex-col justify-between gap-2 shadow-lg">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-red-300">
+            <span className="text-xs font-bold uppercase tracking-wider text-crimson-light">
               🔫 Arsenal (Armes)
             </span>
             <span className="text-[10px] font-mono text-zinc-400 tabular-nums">
@@ -245,7 +279,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           </div>
         </div>
 
-        <div className="bg-charcoal/90 border border-emerald-500/35 rounded-2xl p-4 flex flex-col justify-between gap-2 shadow-lg">
+        <div className="bg-charcoal/95 border border-bronze/60 rounded-2xl p-4 flex flex-col justify-between gap-2 shadow-lg">
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-bold uppercase tracking-wider text-emerald-300">
               💎 Objets à Vendre (Recel)
@@ -258,20 +292,20 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             {formatMoney(rewardsValTotal)}
           </div>
           <div className="text-[11px] text-zinc-400">
-            Lingots, bijoux, montres, cartes...
+            Lingots, bijoux, montres, whiskey...
           </div>
         </div>
       </div>
 
-      {/* MATÉRIEL DE BRAQUAGE (DISSOCIÉ DU RESTE) */}
-      <div className="bg-charcoal/90 gold-border rounded-2xl p-6 shadow-xl space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-4 border-b border-zinc-800">
+      {/* MATÉRIEL DE BRAQUAGE + AUTONOMIE */}
+      <div className="bg-charcoal/95 gold-border rounded-2xl p-6 shadow-xl space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-4 border-b border-bronze/40">
           <div>
             <h2 className="font-display text-xl font-bold text-white flex items-center gap-2">
               <span className="text-gold">💣</span> Matériel de Braquage (Packs &amp; Outillage)
             </h2>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Stock dédié aux braquages et missions du Planning — séparé des armes et du butin à revendre.
+              Stock dédié aux braquages et missions du Planning — avec autonomie restante en jours et prix éditables.
             </p>
           </div>
           <div className="flex items-center gap-4 flex-wrap">
@@ -287,12 +321,143 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               <button
                 type="button"
                 onClick={onResetStock}
-                className="px-3.5 py-2 rounded-xl text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition border border-zinc-700 cursor-pointer"
+                className="px-3.5 py-2 rounded-xl text-xs font-bold bg-obsidian hover:bg-gunmetal text-zinc-300 transition border border-bronze/60 cursor-pointer"
               >
                 Remettre le matériel à 0
               </button>
             )}
           </div>
+        </div>
+
+        {/* BARRE SYNTHÈSE AUTONOMIE DU STOCK (JOURS RESTANTS) */}
+        <div
+          className={`rounded-xl border p-4 space-y-3 ${
+            autonomy.minDaysCovered === 0
+              ? 'bg-crimson-dark/25 border-crimson-light/55'
+              : autonomy.minDaysCovered < 3
+                ? 'bg-gold/10 border-gold/50'
+                : 'bg-obsidian/80 border-emerald-500/40'
+          }`}
+        >
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div
+                className={`w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 ${
+                  autonomy.minDaysCovered === 0
+                    ? 'bg-crimson/25 border-crimson-light/50 text-red-200'
+                    : autonomy.minDaysCovered < 3
+                      ? 'bg-gold/15 border-gold/50 text-gold'
+                      : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                }`}
+              >
+                {autonomy.minDaysCovered === 0 ? (
+                  <AlertTriangle className="w-5 h-5" />
+                ) : autonomy.minDaysCovered < 3 ? (
+                  <Clock className="w-5 h-5" />
+                ) : (
+                  <CheckCircle2 className="w-5 h-5" />
+                )}
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-display text-sm font-bold text-white uppercase tracking-wide">
+                    Autonomie du stock (à partir de {autonomy.startDay}) :{' '}
+                    <span
+                      className={
+                        autonomy.minDaysCovered === 0
+                          ? 'text-crimson-light'
+                          : autonomy.minDaysCovered < 3
+                            ? 'text-gold'
+                            : 'text-emerald-300'
+                      }
+                    >
+                      {globalAutonomyLabel}
+                    </span>
+                  </span>
+                </div>
+                <p className="text-xs text-zinc-300 mt-0.5">
+                  {autonomy.allOver30Days ? (
+                    'Tous les articles du planning couvrent plus de 30 jours d’opérations.'
+                  ) : autonomy.limitingItems.length > 0 ? (
+                    <>
+                      Point limitant :{' '}
+                      <strong className="text-gold-light">
+                        {autonomy.limitingItems
+                          .slice(0, 3)
+                          .map(
+                            (li) =>
+                              `${li.name} (${li.coveredDays}j${li.ruptureDayName ? ` · manque ${li.ruptureDayName}` : ''})`
+                          )
+                          .join(' · ')}
+                        {autonomy.limitingItems.length > 3
+                          ? ` +${autonomy.limitingItems.length - 3} autres`
+                          : ''}
+                      </strong>
+                    </>
+                  ) : (
+                    'Calcul basé sur le calendrier hebdomadaire des missions restantes.'
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowAutonomyBoard((v) => !v)}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-obsidian hover:bg-charcoal text-gold-light border border-gold/45 transition cursor-pointer whitespace-nowrap shrink-0 self-start md:self-center"
+            >
+              {showAutonomyBoard
+                ? 'Masquer le détail des jours restants'
+                : '⏳ Voir l’autonomie détaillée (par article)'}
+            </button>
+          </div>
+
+          {showAutonomyBoard && (
+            <div className="pt-3 border-t border-bronze/35 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {INVENTORY_ITEMS.map((item) => {
+                const info = autonomy.byKey[item.key];
+                const qty = inventoryStock[item.key] || 0;
+                const unscheduled = (info?.neededPerWeek || 0) === 0;
+                const days = info?.coveredDays ?? 0;
+                const over30 = info?.hasMoreThan30 ?? false;
+                return (
+                  <div
+                    key={item.key}
+                    className="bg-charcoal/90 border border-bronze/40 rounded-lg px-3 py-2 flex items-center justify-between gap-2 text-xs tabular-nums"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-semibold text-white truncate">{item.name}</div>
+                      <div className="text-[10px] text-zinc-400">
+                        Stock : <strong className="text-zinc-200">{qty}</strong>
+                        {!unscheduled && (
+                          <> · Besoin/sem : {info?.neededPerWeek}</>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0 font-mono">
+                      {unscheduled ? (
+                        <span className="text-zinc-400 text-[11px]">Hors planning</span>
+                      ) : over30 ? (
+                        <span className="text-emerald-300 font-bold">30+ jours</span>
+                      ) : days === 0 ? (
+                        <span className="text-crimson-light font-bold">
+                          0 j ({info?.ruptureDayName})
+                        </span>
+                      ) : (
+                        <span
+                          className={`font-bold ${
+                            days < 3 ? 'text-amber-300' : 'text-emerald-300'
+                          }`}
+                        >
+                          {days} jour{days > 1 ? 's' : ''}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
@@ -302,7 +467,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
               gearCategoryFilter === 'ALL'
                 ? 'bg-gold text-obsidian border-gold'
-                : 'bg-obsidian/80 text-zinc-300 border-zinc-700 hover:border-zinc-500'
+                : 'bg-obsidian/80 text-zinc-300 border-bronze/50 hover:border-gold/50'
             }`}
           >
             Tout le matériel ({INVENTORY_ITEMS.length}) · {formatMoney(inventoryValTotal)}
@@ -312,8 +477,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             onClick={() => setGearCategoryFilter('tool')}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer tabular-nums ${
               gearCategoryFilter === 'tool'
-                ? 'bg-amber-500/20 text-amber-200 border-amber-400'
-                : 'bg-obsidian/80 text-zinc-300 border-zinc-800 hover:border-zinc-600'
+                ? 'bg-gold/20 text-gold-light border-gold'
+                : 'bg-obsidian/80 text-zinc-300 border-bronze/40 hover:border-bronze'
             }`}
           >
             🧰 Outillage courant ({INVENTORY_ITEMS.filter((i) => i.category === 'tool').length}) ·{' '}
@@ -325,7 +490,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer tabular-nums ${
               gearCategoryFilter === 'heist_pack'
                 ? 'bg-crimson/25 text-red-200 border-crimson-light'
-                : 'bg-obsidian/80 text-zinc-300 border-zinc-800 hover:border-zinc-600'
+                : 'bg-obsidian/80 text-zinc-300 border-bronze/40 hover:border-bronze'
             }`}
           >
             💣 Packs Gros Coups ({INVENTORY_ITEMS.filter((i) => i.category === 'heist_pack').length}) ·{' '}
@@ -336,67 +501,113 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredGearItems.map((item) => {
             const qty = inventoryStock[item.key] || 0;
+            const unitPrice = getInventoryItemPrice(item.key, inventoryPrices);
             const isPack = item.category === 'heist_pack';
+            const auto = autonomy.byKey[item.key];
+            const unscheduled = (auto?.neededPerWeek || 0) === 0;
+            const days = auto?.coveredDays ?? 0;
+            const over30 = auto?.hasMoreThan30 ?? false;
+
             return (
               <div
                 key={item.key}
-                className={`bg-obsidian/75 border ${
-                  qty > 0 ? 'border-emerald-500/40' : 'border-zinc-800'
+                className={`bg-obsidian/80 border ${
+                  qty > 0 ? 'border-emerald-500/40' : 'border-bronze/45'
                 } rounded-xl p-4 flex flex-col justify-between gap-3 shadow-md`}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <h4 className="font-bold text-sm text-white">{item.name}</h4>
-                    </div>
-                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                      <span className="text-xs font-mono tabular-nums text-gold">
-                        {formatMoney(item.price)} l&apos;unité
-                      </span>
+                    <h4 className="font-bold text-sm text-white">{item.name}</h4>
+                    <div className="text-[11px] text-zinc-400 mt-0.5">
+                      {isPack ? 'Pack Gros Coup' : 'Outillage'} ·{' '}
                       <span
-                        className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${
-                          isPack
-                            ? 'bg-crimson/20 text-red-200 border-crimson/40'
-                            : 'bg-zinc-900 text-zinc-400 border-zinc-700'
+                        className={`font-mono font-semibold ${
+                          unitPrice === 0 ? 'text-amber-300' : 'text-gold'
                         }`}
                       >
-                        {isPack ? 'Gros Coup' : 'Outillage'}
+                        {unitPrice > 0 ? `${formatMoney(unitPrice)} / u` : 'Prix à définir'}
                       </span>
                     </div>
                   </div>
                   <span
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold tabular-nums shrink-0 ${
-                      qty > 0
-                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                        : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
+                    className={`font-mono text-[11px] font-bold tabular-nums shrink-0 ${
+                      qty > 0 ? 'text-emerald-300' : 'text-crimson-light'
                     }`}
                   >
-                    {qty > 0 ? `En stock (${qty})` : 'Rupture'}
+                    {qty > 0 ? `Stock (${qty})` : 'Rupture'}
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between gap-2 pt-2 border-t border-zinc-800">
-                  <span className="text-xs text-zinc-400">Quantité en coffre :</span>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      disabled={readonly || qty <= 0}
-                      onClick={() => onUpdateStock(item.key, -1)}
-                      className="w-7 h-7 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-white rounded-lg font-bold flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
-                    >
-                      -
-                    </button>
-                    <span className="font-mono tabular-nums text-sm font-bold text-white w-8 text-center">
-                      {qty}
+                {/* AUTONOMIE RESTANTE SUR L'ARTICLE */}
+                <div className="bg-charcoal/85 border border-bronze/35 rounded-lg px-3 py-1.5 flex items-center justify-between gap-2 text-[11px] tabular-nums">
+                  <span className="text-zinc-400">Autonomie restante :</span>
+                  {unscheduled ? (
+                    <span className="font-mono text-zinc-400">Hors planning</span>
+                  ) : over30 ? (
+                    <span className="font-mono font-bold text-emerald-300">30+ jours</span>
+                  ) : days === 0 ? (
+                    <span className="font-mono font-bold text-crimson-light">
+                      0 jour · Manque {auto?.ruptureDayName}
                     </span>
-                    <button
-                      type="button"
-                      disabled={readonly}
-                      onClick={() => onUpdateStock(item.key, 1)}
-                      className="w-7 h-7 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-white rounded-lg font-bold flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
+                  ) : (
+                    <span
+                      className={`font-mono font-bold ${
+                        days < 3 ? 'text-amber-300' : 'text-emerald-300'
+                      }`}
                     >
-                      +
-                    </button>
+                      {days} jour{days > 1 ? 's' : ''}
+                      {auto?.ruptureDayName ? ` (→ ${auto.ruptureDayName})` : ''}
+                    </span>
+                  )}
+                </div>
+
+                <div className="space-y-2 pt-2 border-t border-bronze/35">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-zinc-400">Prix unitaire ($) :</span>
+                    <div className="relative w-28">
+                      <input
+                        type="number"
+                        min="0"
+                        step="50"
+                        value={unitPrice}
+                        disabled={readonly}
+                        onChange={(e) =>
+                          onUpdateItemPrice(
+                            item.key,
+                            Math.max(0, Number(e.target.value) || 0)
+                          )
+                        }
+                        className="w-full bg-charcoal border border-bronze/60 focus:border-gold rounded-lg pl-2.5 pr-6 py-1 text-right font-mono tabular-nums text-xs font-bold text-gold-light focus:outline-none disabled:opacity-60"
+                      />
+                      <span className="absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[11px] text-zinc-500 pointer-events-none">
+                        $
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-zinc-400">Quantité en coffre :</span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={readonly || qty <= 0}
+                        onClick={() => onUpdateStock(item.key, -1)}
+                        className="w-7 h-7 bg-gunmetal hover:bg-bronze disabled:opacity-40 text-white rounded-lg font-bold flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
+                      >
+                        -
+                      </button>
+                      <span className="font-mono tabular-nums text-sm font-bold text-white w-8 text-center">
+                        {qty}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={readonly}
+                        onClick={() => onUpdateStock(item.key, 1)}
+                        className="w-7 h-7 bg-gunmetal hover:bg-gold hover:text-obsidian disabled:opacity-40 text-white rounded-lg font-bold flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
+                      >
+                        +
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -408,7 +619,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       {/* PRÉPARATION DE COMMANDE (ANTICIPATION PAR JOURS D'AVANCE) */}
       <OrderPreparationPanel
         missionStates={missionStates}
+        scheduleMeta={scheduleMeta}
         inventoryStock={inventoryStock}
+        inventoryPrices={inventoryPrices}
         treasuryMoney={treasuryMoney}
         readonly={readonly}
         onReceiveOrder={onReceiveOrder}
@@ -416,8 +629,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       />
 
       {/* ARMURERIE & DÉTENTION DES ARMES */}
-      <div className="bg-charcoal/90 gold-border rounded-2xl p-6 shadow-xl space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-4 border-b border-zinc-800">
+      <div className="bg-charcoal/95 gold-border rounded-2xl p-6 shadow-xl space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-4 border-b border-bronze/40">
           <div>
             <h2 className="font-display text-xl font-bold text-white flex items-center gap-2">
               <span className="text-crimson-light">🔫</span> Armurerie &amp; Détention des Armes
@@ -451,7 +664,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 value={weaponName}
                 onChange={(e) => setWeaponName(e.target.value)}
                 placeholder="Nom de l'arme (ex: AK-47, .50...)"
-                className="lg:col-span-2 bg-obsidian border border-zinc-700 focus:border-gold outline-none rounded-lg px-3 py-2 text-sm text-white"
+                className="lg:col-span-2 bg-charcoal border border-bronze/60 focus:border-gold outline-none rounded-lg px-3 py-2 text-sm text-white"
               />
               <div className="relative">
                 <input
@@ -461,7 +674,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   value={weaponValue}
                   onChange={(e) => setWeaponValue(e.target.value)}
                   placeholder="Valeur ($)"
-                  className="w-full bg-obsidian border border-zinc-700 focus:border-gold outline-none rounded-lg pl-3 pr-7 py-2 text-sm text-right font-mono tabular-nums text-white"
+                  className="w-full bg-charcoal border border-bronze/60 focus:border-gold outline-none rounded-lg pl-3 pr-7 py-2 text-sm text-right font-mono tabular-nums text-white"
                 />
                 <span className="absolute right-2.5 top-1/2 -translate-y-1/2 font-mono text-xs text-zinc-500 pointer-events-none">
                   $
@@ -475,12 +688,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 onChange={(e) => setWeaponQty(e.target.value)}
                 placeholder="Qté"
                 title="Quantité"
-                className="bg-obsidian border border-zinc-700 focus:border-gold outline-none rounded-lg px-3 py-2 text-sm text-right font-mono tabular-nums text-white"
+                className="bg-charcoal border border-bronze/60 focus:border-gold outline-none rounded-lg px-3 py-2 text-sm text-right font-mono tabular-nums text-white"
               />
               <select
                 value={weaponHolderId}
                 onChange={(e) => setWeaponHolderId(e.target.value)}
-                className="bg-obsidian border border-zinc-700 focus:border-gold outline-none rounded-lg px-3 py-2 text-sm text-white"
+                className="bg-charcoal border border-bronze/60 focus:border-gold outline-none rounded-lg px-3 py-2 text-sm text-white"
               >
                 <option value="coffre">🏛️ Coffre Cartel</option>
                 {sortedMembers.map((m) => (
@@ -497,7 +710,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 value={weaponNotes}
                 onChange={(e) => setWeaponNotes(e.target.value)}
                 placeholder="Détails optionnels (munitions, accessoires, n° série...)"
-                className="flex-1 bg-obsidian border border-zinc-700 focus:border-gold outline-none rounded-lg px-3 py-2 text-xs text-zinc-200"
+                className="flex-1 bg-charcoal border border-bronze/60 focus:border-gold outline-none rounded-lg px-3 py-2 text-xs text-zinc-200"
               />
               <div className="flex items-center gap-2 shrink-0">
                 <button
@@ -510,7 +723,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   <button
                     type="button"
                     onClick={resetForm}
-                    className="px-4 py-2 rounded-lg text-xs font-bold bg-charcoal border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition cursor-pointer"
+                    className="px-4 py-2 rounded-lg text-xs font-bold bg-charcoal border border-gunmetal text-zinc-300 hover:bg-gunmetal transition cursor-pointer"
                   >
                     Annuler
                   </button>
@@ -529,7 +742,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
                 holderFilter === 'ALL'
                   ? 'bg-gold text-obsidian border-gold'
-                  : 'bg-obsidian/80 text-zinc-300 border-zinc-700 hover:border-zinc-500'
+                  : 'bg-obsidian/80 text-zinc-300 border-bronze/50 hover:border-gold/50'
               }`}
             >
               Tous ({totalWeaponsCount}) · {formatMoney(weaponsValTotal)}
@@ -544,7 +757,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer tabular-nums ${
                     active
                       ? 'bg-gold/20 text-gold-light border-gold'
-                      : 'bg-obsidian/80 text-zinc-300 border-zinc-800 hover:border-zinc-600'
+                      : 'bg-obsidian/80 text-zinc-300 border-bronze/40 hover:border-bronze'
                   }`}
                 >
                   {h.holderId === 'coffre' ? '🏛️ ' : '👤 '}
@@ -557,7 +770,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         )}
 
         {filteredWeapons.length === 0 ? (
-          <div className="bg-obsidian/50 border border-zinc-800/80 rounded-xl p-6 text-center text-xs text-zinc-400">
+          <div className="bg-obsidian/50 border border-bronze/35 rounded-xl p-6 text-center text-xs text-zinc-400">
             {weaponsList.length === 0
               ? 'Aucune arme enregistrée dans l’arsenal pour le moment.'
               : 'Aucune arme pour ce détenteur.'}
@@ -574,7 +787,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               return (
                 <div
                   key={w.id}
-                  className="bg-obsidian/80 border border-zinc-800 hover:border-gold/40 rounded-xl p-4 flex flex-col justify-between gap-3 shadow-md transition"
+                  className="bg-obsidian/80 border border-bronze/45 hover:border-gold/50 rounded-xl p-4 flex flex-col justify-between gap-3 shadow-md transition"
                 >
                   <div className="space-y-2">
                     <div className="flex items-start justify-between gap-2">
@@ -584,20 +797,15 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                           {formatMoney(unitVal)} l&apos;unité
                         </span>
                       </div>
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gold/15 text-gold-light border border-gold/40 font-mono tabular-nums shrink-0">
+                      <span className="font-mono text-xs font-bold text-gold tabular-nums shrink-0">
                         {formatMoney(subTotal)}
                       </span>
                     </div>
 
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <span
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold border ${
-                          isCoffre
-                            ? 'bg-zinc-900 text-zinc-200 border-zinc-700'
-                            : 'bg-crimson/15 text-red-200 border-crimson/40'
-                        }`}
-                      >
-                        {isCoffre ? '🏛️' : '👤'} Détenue par : {holderName}
+                    <div className="text-[11px] font-semibold text-zinc-300">
+                      {isCoffre ? '🏛️' : '👤'} Détenue par :{' '}
+                      <span className={isCoffre ? 'text-zinc-200' : 'text-gold-light'}>
+                        {holderName}
                       </span>
                     </div>
 
@@ -606,13 +814,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     )}
                   </div>
 
-                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-zinc-800">
+                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-bronze/35">
                     <div className="flex items-center gap-1.5">
                       <button
                         type="button"
                         disabled={readonly || qty <= 1}
                         onClick={() => onUpdateWeaponQty(w.id, -1)}
-                        className="w-7 h-7 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-white rounded-lg font-bold flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
+                        className="w-7 h-7 bg-gunmetal hover:bg-bronze disabled:opacity-40 text-white rounded-lg font-bold flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
                       >
                         -
                       </button>
@@ -623,7 +831,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                         type="button"
                         disabled={readonly}
                         onClick={() => onUpdateWeaponQty(w.id, 1)}
-                        className="w-7 h-7 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-white rounded-lg font-bold flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
+                        className="w-7 h-7 bg-gunmetal hover:bg-gold hover:text-obsidian disabled:opacity-40 text-white rounded-lg font-bold flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
                       >
                         +
                       </button>
@@ -647,7 +855,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                           type="button"
                           title="Modifier"
                           onClick={() => handleEditWeapon(w)}
-                          className="text-zinc-400 hover:text-gold text-xs px-2 py-1 rounded bg-zinc-900 border border-zinc-800 cursor-pointer"
+                          className="text-zinc-400 hover:text-gold text-xs px-2 py-1 rounded bg-charcoal border border-gunmetal cursor-pointer"
                         >
                           ✎
                         </button>
@@ -658,7 +866,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                           className={`text-xs px-2 py-1 rounded border cursor-pointer ${
                             delArmId === w.id
                               ? 'bg-red-600/20 border-red-500/60 text-red-300 font-bold'
-                              : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-red-400'
+                              : 'bg-charcoal border-gunmetal text-zinc-400 hover:text-red-400'
                           }`}
                         >
                           {delArmId === w.id ? 'Confirmer ?' : '✕'}
@@ -673,12 +881,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         )}
       </div>
 
-      {/* OBJETS & BUTIN EN COFFRE (LINGOTS, BIJOUX, ETC.) */}
-      <div className="bg-charcoal/90 gold-border rounded-2xl p-6 shadow-xl space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-4 border-b border-zinc-800">
+      {/* OBJETS & BUTIN EN COFFRE (LINGOTS, BIJOUX, WHISKEY...) */}
+      <div className="bg-charcoal/95 gold-border rounded-2xl p-6 shadow-xl space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-4 border-b border-bronze/40">
           <div>
             <h2 className="font-display text-xl font-bold text-white flex items-center gap-2">
-              <span className="text-gold">💎</span> Objets &amp; Butin en Coffre (Lingots, Bijoux...)
+              <span className="text-gold">💎</span> Objets &amp; Butin en Coffre (Lingots, Bijoux, Whiskey...)
             </h2>
             <p className="text-xs text-zinc-400 mt-0.5">
               Stock synchronisé avec la Trésorerie et les gains sélectionnés dans le Planning.
@@ -705,8 +913,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             return (
               <div
                 key={item.key}
-                className={`bg-obsidian/75 border ${
-                  qty > 0 ? 'border-amber-500/40' : 'border-zinc-800'
+                className={`bg-obsidian/80 border ${
+                  qty > 0 ? 'border-gold/45' : 'border-bronze/40'
                 } rounded-xl p-4 flex flex-col justify-between gap-3 shadow-md`}
               >
                 <div className="flex items-start justify-between gap-2">
@@ -718,24 +926,22 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     </span>
                   </div>
                   <span
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold tabular-nums ${
-                      qty > 0
-                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                        : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
+                    className={`font-mono text-xs font-bold tabular-nums ${
+                      qty > 0 ? 'text-gold-light' : 'text-zinc-500'
                     }`}
                   >
                     {qty > 0 ? `${qty} en coffre` : '0'}
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between gap-2 pt-2 border-t border-zinc-800">
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-bronze/35">
                   <span className="text-xs text-zinc-400">Quantité en coffre :</span>
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
                       disabled={readonly || qty <= 0}
                       onClick={() => onUpdateRewardQty(item.key, -1)}
-                      className="w-7 h-7 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-white rounded-lg font-bold flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
+                      className="w-7 h-7 bg-gunmetal hover:bg-bronze disabled:opacity-40 text-white rounded-lg font-bold flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
                     >
                       -
                     </button>
@@ -746,7 +952,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                       type="button"
                       disabled={readonly}
                       onClick={() => onUpdateRewardQty(item.key, 1)}
-                      className="w-7 h-7 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-white rounded-lg font-bold flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
+                      className="w-7 h-7 bg-gunmetal hover:bg-gold hover:text-obsidian disabled:opacity-40 text-white rounded-lg font-bold flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
                     >
                       +
                     </button>

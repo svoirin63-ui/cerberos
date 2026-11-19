@@ -1,9 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { DAY_NAMES, INVENTORY_ITEMS, REWARD_ITEMS, WEEKLY_SCHEDULE } from '@/src/data/cartelData';
+import { Clock, RefreshCw, RotateCcw, ScrollText, AlertTriangle } from 'lucide-react';
+import {
+  DAY_NAMES,
+  INVENTORY_ITEMS,
+  REGULATION_FAIRPLAY_NOTE,
+  REGULATION_TABLE_ROWS,
+  REWARD_ITEMS,
+} from '@/src/data/cartelData';
 import type {
   HierarchyMember,
+  InventoryPrices,
   InventoryStock,
   Mission,
+  MissionScheduleMeta,
   MissionStateEntry,
   MissionStates,
 } from '@/src/types/cartel';
@@ -15,15 +24,20 @@ import {
   fmtShort,
   formatMoney,
   formatSigned,
+  getInventoryItemPrice,
+  getMissionCost,
   getMissionEntry,
   isTodayName,
   missionFin,
   netClass,
 } from '@/src/utils/finance';
+import { type EffectiveMission, getEffectiveSchedule } from '@/src/utils/schedule';
 
 interface PlanningViewProps {
   missionStates: MissionStates;
+  scheduleMeta: MissionScheduleMeta;
   inventoryStock: InventoryStock;
+  inventoryPrices?: InventoryPrices;
   members: HierarchyMember[];
   readonly: boolean;
   onOpenMissionValidation: (
@@ -34,19 +48,26 @@ interface PlanningViewProps {
   onResetMission: (missionId: string) => void;
   onToggleWholeDay: (dayName: string) => void;
   onToggleAllWeek: () => void;
+  onRecalculateSchedule: () => void;
+  onResetScheduleOverrides: () => void;
 }
 
 export const PlanningView: React.FC<PlanningViewProps> = ({
   missionStates,
+  scheduleMeta,
   inventoryStock,
+  inventoryPrices,
   members,
   readonly,
   onOpenMissionValidation,
   onResetMission,
   onToggleWholeDay,
   onToggleAllWeek,
+  onRecalculateSchedule,
+  onResetScheduleOverrides,
 }) => {
   const [activeFilter, setActiveFilter] = useState<string>('ALL');
+  const [showRegulation, setShowRegulation] = useState<boolean>(false);
   const [openDays, setOpenDays] = useState<Set<string>>(() => {
     const today = DAY_NAMES.find((d) => isTodayName(d, missionStates));
     return new Set(today ? [today] : []);
@@ -181,12 +202,32 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
     );
   };
 
+  const effectiveSchedule = useMemo(
+    () => getEffectiveSchedule(missionStates, scheduleMeta),
+    [missionStates, scheduleMeta]
+  );
+
+  const hasScheduleAdjustments =
+    effectiveSchedule.movedCount > 0 || effectiveSchedule.unplacedMissions.length > 0;
+
+  const formattedLastRecalc = useMemo(() => {
+    if (!scheduleMeta.lastRecalcAt) return null;
+    const dt = new Date(scheduleMeta.lastRecalcAt);
+    if (Number.isNaN(dt.getTime())) return scheduleMeta.lastRecalcDate || null;
+    return dt.toLocaleString('fr-FR', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }, [scheduleMeta.lastRecalcAt, scheduleMeta.lastRecalcDate]);
+
   const single = activeFilter !== 'ALL';
   const filteredDays = single
-    ? WEEKLY_SCHEDULE.filter((d) => d.day === activeFilter)
-    : WEEKLY_SCHEDULE;
+    ? effectiveSchedule.days.filter((d) => d.day === activeFilter)
+    : effectiveSchedule.days;
 
-  const renderSingleDayRows = (dayName: string, missions: Mission[]) => {
+  const renderSingleDayRows = (dayName: string, missions: EffectiveMission[]) => {
     const cols = 'lg:grid-cols-[minmax(0,2.4fr)_90px_230px_110px_110px_110px]';
 
     return (
@@ -204,7 +245,16 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
         <div className="space-y-1.5">
           {missions.map((m) => {
             const st = getMissionEntry(missionStates, m.id);
-            const f = missionFin(m, missionStates);
+            const f = missionFin(m, missionStates, inventoryPrices);
+            const missionCost = getMissionCost(m, inventoryPrices);
+            const gearLabel =
+              m.gearKey === 'drg'
+                ? `Clé USB 3.1 (${
+                    getInventoryItemPrice('drg', inventoryPrices) > 0
+                      ? formatMoney(getInventoryItemPrice('drg', inventoryPrices))
+                      : 'Prix à définir'
+                  })`
+                : m.gearName;
             const hasStock = checkStockAvailability(m.gearKey, inventoryStock).available;
             const isTenMin = m.wait === '10 min';
             const rowClass = f.success
@@ -212,8 +262,8 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
               : f.fail
                 ? 'bg-red-950/30 border-red-500/50'
                 : hasStock
-                  ? 'bg-charcoal/60 border-zinc-700/70'
-                  : 'bg-zinc-950/40 border-zinc-800/60';
+                  ? 'bg-charcoal/60 border-bronze/50'
+                  : 'bg-obsidian/60 border-gunmetal';
 
             const btnBase =
               'flex-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition whitespace-nowrap cursor-pointer';
@@ -239,8 +289,13 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-semibold text-sm text-zinc-100">{m.name}</span>
                     {m.major && (
-                      <span className="px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider rounded bg-gradient-to-r from-gold to-amber-300 text-obsidian">
+                      <span className="px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider rounded bg-gradient-to-r from-gold to-gold-light text-obsidian">
                         Gros Coup
+                      </span>
+                    )}
+                    {m.isRescheduled && (
+                      <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                        🔄 Reportée de {m.originalDay}
                       </span>
                     )}
                     {f.done && (
@@ -257,7 +312,7 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                     <span className={hasStock ? 'text-emerald-300' : 'text-red-300'}>
                       {hasStock ? '✅ Matériel OK' : '⚠️ Stock insuffisant'}
                     </span>
-                    <span className="text-zinc-500 truncate">{m.gearName}</span>
+                    <span className="text-zinc-500 truncate">{gearLabel}</span>
                   </div>
                 </div>
 
@@ -267,10 +322,10 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                   </span>
                   <span
                     className={`font-mono tabular-nums text-xs font-bold ${
-                      m.cost > 0 ? 'text-amber-300' : 'text-zinc-500'
+                      missionCost > 0 ? 'text-amber-300' : 'text-zinc-500'
                     }`}
                   >
-                    {m.cost > 0 ? '-' + formatMoney(m.cost) : '0 $'}
+                    {missionCost > 0 ? '-' + formatMoney(missionCost) : '0 $'}
                   </span>
                 </div>
 
@@ -357,6 +412,166 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* BANDEAU RECALCUL AUTOMATIQUE 09H30 & RÈGLEMENT */}
+      <div className="bg-charcoal/90 gold-border rounded-2xl p-4 shadow-xl space-y-3">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-obsidian border border-gold/40 flex items-center justify-center text-gold shrink-0">
+              <Clock className="w-5 h-5" />
+            </div>
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-display text-sm font-bold text-white tracking-wide">
+                  Recalcul Automatique à 09h30
+                </h3>
+                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-gold/15 text-gold-light border border-gold/35">
+                  Quotidien · Conforme au règlement
+                </span>
+                {effectiveSchedule.movedCount > 0 && (
+                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/35 tabular-nums">
+                    🔄 {effectiveSchedule.movedCount} reportée{effectiveSchedule.movedCount > 1 ? 's' : ''}
+                  </span>
+                )}
+                {effectiveSchedule.unplacedMissions.length > 0 && (
+                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-red-500/15 text-red-300 border border-red-500/35 tabular-nums">
+                    ⚠️ {effectiveSchedule.unplacedMissions.length} hors quota
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-zinc-400">
+                Chaque jour à <strong className="text-zinc-200">09h30</strong>, les missions non réalisées des jours précédents sont réparties sur le reste de la semaine sans dépasser les limites journalières et hebdomadaires.{' '}
+                {formattedLastRecalc ? (
+                  <span className="text-gold-light/90 font-medium">
+                    Dernier calcul : {formattedLastRecalc}
+                  </span>
+                ) : (
+                  <span className="text-zinc-500">Aucun recalcul actif cette semaine.</span>
+                )}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowRegulation((v) => !v)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition flex items-center gap-1.5 cursor-pointer ${
+                showRegulation
+                  ? 'bg-gold text-obsidian border-gold'
+                  : 'bg-obsidian/80 hover:bg-obsidian text-zinc-200 border-bronze/50 hover:border-gold/60'
+              }`}
+            >
+              <ScrollText className="w-3.5 h-3.5" />
+              {showRegulation ? 'Masquer le règlement' : 'Voir le règlement'}
+            </button>
+            {!readonly && (
+              <>
+                <button
+                  type="button"
+                  onClick={onRecalculateSchedule}
+                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-gold hover:bg-gold-light text-obsidian transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Recalculer maintenant
+                </button>
+                {hasScheduleAdjustments && (
+                  <button
+                    type="button"
+                    onClick={onResetScheduleOverrides}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 transition flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    Planning d&apos;origine
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        {showRegulation && (
+          <div className="pt-3 border-t border-bronze/35 space-y-3">
+            <div className="overflow-x-auto rounded-xl border border-bronze/40 bg-obsidian/75">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-charcoal/90 text-[10px] uppercase tracking-wider text-gold-light border-b border-bronze/40">
+                  <tr>
+                    <th className="px-3 py-2">Cible</th>
+                    <th className="px-3 py-2">Criminels</th>
+                    <th className="px-3 py-2 text-center">Par jour</th>
+                    <th className="px-3 py-2 text-center">Par semaine</th>
+                    <th className="px-3 py-2 text-right">Planning</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800/70">
+                  {REGULATION_TABLE_ROWS.map((row) => (
+                    <tr key={row.label} className="hover:bg-charcoal/50">
+                      <td className="px-3 py-1.5 font-semibold text-zinc-100">{row.label}</td>
+                      <td className="px-3 py-1.5 text-zinc-300">{row.criminals}</td>
+                      <td className="px-3 py-1.5 text-center font-mono text-gold-light font-semibold">
+                        {row.daily}
+                      </td>
+                      <td className="px-3 py-1.5 text-center font-mono text-zinc-200 font-semibold">
+                        {row.weekly}
+                      </td>
+                      <td className="px-3 py-1.5 text-right">
+                        {row.inPlanning ? (
+                          <span className="text-[10px] font-semibold text-emerald-300">
+                            Suivi auto
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-zinc-500">Hors semainier</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="rounded-xl bg-amber-500/10 border border-amber-500/35 px-3.5 py-2 text-xs text-amber-200 font-medium">
+              ⚖️ {REGULATION_FAIRPLAY_NOTE}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {effectiveSchedule.unplacedMissions.length > 0 && (
+        <div className="bg-red-950/25 border border-crimson-light/45 rounded-2xl p-4 space-y-2.5">
+          <div className="flex items-center gap-2 text-red-200 font-display text-sm font-bold">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            Missions en retard non replaçables ({effectiveSchedule.unplacedMissions.length}) — Règlement journalier déjà saturé
+          </div>
+          <p className="text-xs text-zinc-300">
+            Ces missions n&apos;ont pas été réalisées à temps et ne peuvent pas être reportées sur les jours restants sans dépasser la limite par jour du règlement :
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {effectiveSchedule.unplacedMissions.map(({ mission, originalDay, reason }) => (
+              <div
+                key={mission.id}
+                className="rounded-xl bg-obsidian/80 border border-red-500/30 px-3 py-2 flex items-center justify-between gap-2"
+              >
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-zinc-100 truncate">
+                    {mission.name}{' '}
+                    <span className="text-zinc-400 font-normal">({originalDay})</span>
+                  </p>
+                  <p className="text-[10px] text-amber-300/90 truncate">{reason}</p>
+                </div>
+                {!readonly && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenMissionValidation(mission, originalDay, 'success')}
+                    title="Valider rétroactivement si effectuée"
+                    className="px-2 py-1 rounded-lg text-[10px] font-bold bg-zinc-900 hover:bg-zinc-800 text-gold-light border border-gold/40 shrink-0 cursor-pointer"
+                  >
+                    Valider
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1 w-full sm:w-auto">
           <button
@@ -429,7 +644,7 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
           let dayGains = 0;
 
           dayObj.missions.forEach((m) => {
-            const f = missionFin(m, missionStates);
+            const f = missionFin(m, missionStates, inventoryPrices);
             if (f.success) okCount++;
             if (f.fail) koCount++;
             dayCost += f.cost;
@@ -481,6 +696,11 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                       <span className="text-emerald-400">✅ {okCount}</span>{' '}
                       <span className="text-red-400 ml-1">❌ {koCount}</span>{' '}
                       <span className="text-zinc-500 ml-1">/ {dayObj.missions.length}</span>
+                      {dayObj.carriedOutCount > 0 && (
+                        <span className="text-amber-300/80 ml-1.5">
+                          ({dayObj.carriedOutCount} reportée{dayObj.carriedOutCount > 1 ? 's' : ''})
+                        </span>
+                      )}
                     </p>
                   </div>
                 </div>
@@ -502,7 +722,16 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                     <div className="p-3.5 sm:p-4 space-y-2.5 flex-1">
                       {dayObj.missions.map((mission) => {
                         const st = getMissionEntry(missionStates, mission.id);
-                        const f = missionFin(mission, missionStates);
+                        const f = missionFin(mission, missionStates, inventoryPrices);
+                        const missionCost = getMissionCost(mission, inventoryPrices);
+                        const gearLabel =
+                          mission.gearKey === 'drg'
+                            ? `Clé USB 3.1 (${
+                                getInventoryItemPrice('drg', inventoryPrices) > 0
+                                  ? formatMoney(getInventoryItemPrice('drg', inventoryPrices))
+                                  : 'Prix à définir'
+                              })`
+                            : mission.gearName;
                         const isTenMin = mission.wait === '10 min';
                         const hasStock = checkStockAvailability(
                           mission.gearKey,
@@ -538,21 +767,28 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                             className={`border rounded-xl p-3 transition ${cardClass}`}
                           >
                             <div className="flex items-center justify-between gap-2 flex-wrap">
-                              <span className="font-semibold text-sm text-zinc-100 leading-snug">
-                                {mission.name}
-                              </span>
+                              <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                                <span className="font-semibold text-sm text-zinc-100 leading-snug">
+                                  {mission.name}
+                                </span>
+                                {mission.isRescheduled && (
+                                  <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                                    🔄 Reportée de {mission.originalDay}
+                                  </span>
+                                )}
+                              </div>
                               <div className="flex items-center gap-1.5 shrink-0">
                                 {mission.major && (
-                                  <span className="px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider rounded bg-gradient-to-r from-gold to-amber-300 text-obsidian shadow-sm">
+                                  <span className="px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider rounded bg-gradient-to-r from-gold to-gold-light text-obsidian shadow-sm">
                                     Gros Coup
                                   </span>
                                 )}
                                 <span
                                   className={`font-mono tabular-nums text-xs font-bold ${
-                                    mission.cost > 0 ? 'text-amber-300/90' : 'text-zinc-500'
+                                    missionCost > 0 ? 'text-amber-300/90' : 'text-zinc-500'
                                   }`}
                                 >
-                                  {mission.cost > 0 ? '-' + formatMoney(mission.cost) : '0 $'}
+                                  {missionCost > 0 ? '-' + formatMoney(missionCost) : '0 $'}
                                 </span>
                               </div>
                             </div>
@@ -581,7 +817,7 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                               </span>
                             </div>
                             <p className="text-[11px] text-zinc-400 mt-1.5 leading-snug">
-                              <span className="text-zinc-500">Matériel :</span> {mission.gearName}
+                              <span className="text-zinc-500">Matériel :</span> {gearLabel}
                             </p>
 
                             <div className="mt-2.5 flex items-center gap-2">

@@ -2,17 +2,19 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  --color-obsidian: #07080c;
-  --color-charcoal: #0e1017;
-  --color-slateDark: #141720;
-  --color-gold: #d4af37;
-  --color-gold-light: #f3e5ab;
-  --color-crimson: #991b1b;
-  --color-crimson-dark: #7f1d1d;
-  --color-crimson-light: #ef4444;
+  --color-obsidian: #080808;
+  --color-charcoal: #11100f;
+  --color-slateDark: #181614;
+  --color-gunmetal: #343333;
+  --color-bronze: #6b5140;
+  --color-gold: #c5a15a;
+  --color-gold-light: #e3c98f;
+  --color-crimson: #8e2024;
+  --color-crimson-dark: #5c1316;
+  --color-crimson-light: #c83e43;
 
-  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Cinzel", ui-serif, Georgia, serif;
+  --font-sans: "Montserrat", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Playfair Display", ui-serif, Georgia, serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
@@ -20,6 +22,7 @@ body {
   position: relative;
   isolation: isolate;
   min-height: 100vh;
+  background-color: #080808;
 }
 
 body::before {
@@ -29,7 +32,7 @@ body::before {
   z-index: -2;
   pointer-events: none;
   background-image:
-    linear-gradient(rgba(7, 8, 12, 0.78), rgba(7, 8, 12, 0.92)),
+    linear-gradient(rgba(8, 8, 8, 0.84), rgba(8, 8, 8, 0.94)),
     url("/assets/emblem.webp");
   background-position: center;
   background-size: cover;
@@ -44,15 +47,19 @@ body::after {
   pointer-events: none;
   background-image: url("/assets/emblem.webp");
   background-position: center;
-  background-size: min(80vw, 650px);
+  background-size: min(76vw, 620px);
   background-repeat: no-repeat;
-  opacity: 0.16;
-  filter: grayscale(10%) contrast(130%);
+  opacity: 0.12;
+  filter: sepia(18%) contrast(120%);
 }
 
 .gold-border {
-  border: 1px solid rgba(212, 175, 55, 0.35);
-  box-shadow: 0 4px 25px -2px rgba(0, 0, 0, 0.8);
+  border: 1px solid rgba(197, 161, 90, 0.34);
+  box-shadow: 0 6px 24px -4px rgba(0, 0, 0, 0.82);
+}
+
+.bronze-border {
+  border: 1px solid rgba(107, 81, 64, 0.55);
 }
 
 .tabular-nums {
@@ -65,14 +72,14 @@ body::after {
 }
 
 ::-webkit-scrollbar-track {
-  background: #07080c;
+  background: #080808;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #27272a;
+  background: #343333;
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #d4af37;
+  background: #c5a15a;
 }

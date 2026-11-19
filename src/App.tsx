@@ -9,6 +9,7 @@ import {
   LogOut,
   Package,
   RefreshCw,
+  Trophy,
   Users,
   Wallet,
 } from 'lucide-react';
@@ -21,13 +22,15 @@ import {
   type MissionValidationPayload,
 } from '@/src/components/MissionValidationModal';
 import { PlanningView } from '@/src/components/PlanningView';
+import { RankingView } from '@/src/components/RankingView';
 import { ResetModal } from '@/src/components/ResetModal';
-import { Toast } from '@/src/components/Toast';
+import { Toast, type ToastVariant } from '@/src/components/Toast';
 import { TreasuryView } from '@/src/components/TreasuryView';
 import {
   DEFAULT_SECRET_CODE,
   HIER_DEFAULTS,
   INVENTORY_ITEMS,
+  PREVIOUS_REWARD_DEFAULTS,
   REWARD_ITEMS,
   TOTAL_WEEKLY_MISSIONS,
   WEEKLY_SCHEDULE,
@@ -43,10 +46,14 @@ import {
   saveAllMissionEntriesWithSideEffects,
   saveHierarchyMembers,
   saveInventoryItem,
+  saveInventoryItemPrice,
   saveInventoryOrderReceipt,
+  saveMemberRankings,
   saveMissionEntry,
   saveMissionWithSideEffects,
   saveRewardItem,
+  saveRewardPricesBatch,
+  saveSchedulePlan,
   saveTreasuryMoneyField,
   saveWeaponLossGlobal,
   saveWeaponsLoss,
@@ -58,9 +65,12 @@ import {
 import type {
   HierarchyMember,
   HierarchyUnitKey,
+  InventoryPrices,
   InventoryStock,
   LostWeaponRecord,
+  MemberRankingsMap,
   Mission,
+  MissionScheduleMeta,
   MissionStateEntry,
   MissionStates,
   MissionStatus,
@@ -76,6 +86,7 @@ import {
   calcTotalWealth,
   currentWeekStart,
   formatMoney,
+  getInventoryItemPrice,
   getMissionEntry,
   getStatus,
   isoDate,
@@ -83,6 +94,14 @@ import {
   missionFin,
   weekRangeText,
 } from '@/src/utils/finance';
+import {
+  EMPTY_SCHEDULE_META,
+  computeRecalculatedSchedule,
+  getCurrentWeekTodayName,
+  getEffectiveSchedule,
+  getMsUntilNextDailyRecalc,
+  isPastDailyRecalcTime,
+} from '@/src/utils/schedule';
 
 const LEGACY_STORAGE_KEYS = {
   missions: 'los_cerberos_local_state',
@@ -148,6 +167,65 @@ function extractEntriesRecord(
   return entries;
 }
 
+function buildValidationStockAlert(params: {
+  debitedKeys: string[];
+  missionGearKey: string;
+  nextInventory: InventoryStock;
+}): { variant: ToastVariant; message: string } | null {
+  const { debitedKeys, missionGearKey, nextInventory } = params;
+  const alerts: Array<{ variant: ToastVariant; text: string }> = [];
+
+  const keysToCheck =
+    debitedKeys.length > 0
+      ? debitedKeys
+      : missionGearKey !== 'none'
+        ? [missionGearKey]
+        : [];
+
+  keysToCheck.forEach((gKey) => {
+    const item = INVENTORY_ITEMS.find((i) => i.key === gKey);
+    if (!item) return;
+    const remaining = Math.max(0, Math.floor(Number(nextInventory[gKey]) || 0));
+
+    if (item.category === 'heist_pack') {
+      if (remaining === 0) {
+        alerts.push({
+          variant: 'critical',
+          text:
+            debitedKeys.includes(gKey)
+              ? `Dernier ${item.name} utilisé (0 restant en stock)`
+              : `Stock à 0 : ${item.name} manquant`,
+        });
+      }
+      return;
+    }
+
+    if (item.category === 'tool') {
+      if (remaining === 0) {
+        alerts.push({
+          variant: 'critical',
+          text: debitedKeys.includes(gKey)
+            ? `Stock épuisé : 0 ${item.name} restant`
+            : `Stock à 0 : ${item.name} manquant`,
+        });
+      } else if (remaining === 1 && debitedKeys.includes(gKey)) {
+        alerts.push({
+          variant: 'warning',
+          text: `Plus que 1 ${item.name} en stock`,
+        });
+      }
+    }
+  });
+
+  if (alerts.length === 0) return null;
+  const hasCritical = alerts.some((a) => a.variant === 'critical');
+  const prefix = hasCritical ? '🚨' : '⚠️';
+  return {
+    variant: hasCritical ? 'critical' : 'warning',
+    message: `${prefix} ${alerts.map((a) => a.text).join(' · ')}`,
+  };
+}
+
 export default function App() {
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
@@ -161,7 +239,10 @@ export default function App() {
   const [missionStates, setMissionStates] = useState<MissionStates>(() => ({
     __week: isoDate(currentWeekStart()),
   }));
+  const [scheduleMeta, setScheduleMeta] = useState<MissionScheduleMeta>(EMPTY_SCHEDULE_META);
+  const [scheduleSynced, setScheduleSynced] = useState(false);
   const [inventoryStock, setInventoryStock] = useState<InventoryStock>({});
+  const [inventoryPrices, setInventoryPrices] = useState<InventoryPrices>({});
   const [weaponsStock, setWeaponsStock] = useState<WeaponsStock>({});
   const [treasuryMoney, setTreasuryMoney] = useState<TreasuryMoney>({
     legal: 0,
@@ -170,6 +251,7 @@ export default function App() {
   const [rewardStocks, setRewardStocks] = useState<RewardStocks>({});
   const [weaponsLossAmount, setWeaponsLossAmount] = useState<number>(0);
   const [hierMembers, setHierMembers] = useState<HierarchyMember[]>(HIER_DEFAULTS);
+  const [memberRankings, setMemberRankings] = useState<MemberRankingsMap>({});
 
   const [currentTab, setCurrentTab] = useState<TabKey>('planning');
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -179,24 +261,47 @@ export default function App() {
     dayName: string;
     initialStatus: 'success' | 'fail';
   } | null>(null);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastState, setToastState] = useState<{
+    message: string;
+    variant: ToastVariant;
+    withStockShortcut: boolean;
+  } | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [, setDayTick] = useState(() => isoDate(new Date()));
+  const [recalcClockTick, setRecalcClockTick] = useState(() => Date.now());
   const toastTimerRef = useRef<number | null>(null);
+  const didMigrateRewardPricesRef = useRef(false);
+  const autoRecalcAttemptedDateRef = useRef<string>('');
 
   if (syncError) {
     throw syncError;
   }
 
-  const showToast = useCallback((msg: string) => {
-    setToastMessage(msg);
-    if (toastTimerRef.current) {
-      window.clearTimeout(toastTimerRef.current);
-    }
-    toastTimerRef.current = window.setTimeout(() => {
-      setToastMessage(null);
-    }, 3500);
-  }, []);
+  const showToast = useCallback(
+    (
+      msg: string,
+      options?: {
+        variant?: ToastVariant;
+        durationMs?: number;
+        withStockShortcut?: boolean;
+      }
+    ) => {
+      const variant = options?.variant ?? 'default';
+      const durationMs = options?.durationMs ?? (variant === 'default' ? 3500 : 6500);
+      setToastState({
+        message: msg,
+        variant,
+        withStockShortcut: Boolean(options?.withStockShortcut),
+      });
+      if (toastTimerRef.current) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+      toastTimerRef.current = window.setTimeout(() => {
+        setToastState(null);
+      }, durationMs);
+    },
+    []
+  );
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
@@ -216,6 +321,7 @@ export default function App() {
     let cancelled = false;
     let unsubSync: (() => void) | null = null;
     setCartelStatus('loading');
+    setScheduleSynced(false);
 
     const startSync = async () => {
       try {
@@ -229,7 +335,12 @@ export default function App() {
         setCartelStatus('ready');
         unsubSync = subscribeCartelState(authUser.uid, {
           onMissions: (ms) => setMissionStates(ms),
+          onScheduleMeta: (meta) => {
+            setScheduleMeta(meta);
+            setScheduleSynced(true);
+          },
           onInventory: (stock) => setInventoryStock(stock),
+          onInventoryPrices: (prices) => setInventoryPrices(prices),
           onWeapons: (weapons) => setWeaponsStock(weapons),
           onTreasury: (data) => {
             setTreasuryMoney(data.treasuryMoney);
@@ -237,6 +348,7 @@ export default function App() {
             setWeaponsLossAmount(data.weaponsLossAmount);
           },
           onHierarchy: (members) => setHierMembers(members),
+          onMemberRankings: (rankings) => setMemberRankings(rankings),
           onRole: (role) => setMemberRole(role),
           onError: (err) => setSyncError(err),
         });
@@ -251,6 +363,7 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      setScheduleSynced(false);
       if (unsubSync) unsubSync();
     };
   }, [authReady, authUser, retryCounter]);
@@ -263,8 +376,108 @@ export default function App() {
     return () => window.clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    const ms = getMsUntilNextDailyRecalc(new Date());
+    const timer = window.setTimeout(() => {
+      setRecalcClockTick(Date.now());
+    }, ms);
+    return () => window.clearTimeout(timer);
+  }, [recalcClockTick]);
+
   const isUnlocked = memberRole === 'editor';
   const readonly = !isUnlocked;
+
+  // Automatic daily 09:30 schedule recalculation for uncompleted overdue missions
+  useEffect(() => {
+    if (
+      cartelStatus !== 'ready' ||
+      !scheduleSynced ||
+      !isUnlocked ||
+      !authUser ||
+      isWeekStale(missionStates)
+    ) {
+      return;
+    }
+
+    const now = new Date();
+    const todayIso = isoDate(now);
+    if (!isPastDailyRecalcTime(now)) return;
+    if (scheduleMeta.lastRecalcDate === todayIso) return;
+    if (autoRecalcAttemptedDateRef.current === todayIso) return;
+
+    const todayDayName = getCurrentWeekTodayName(missionStates, now);
+    if (!todayDayName) return;
+
+    autoRecalcAttemptedDateRef.current = todayIso;
+    const res = computeRecalculatedSchedule({
+      missionStates,
+      currentMeta: scheduleMeta,
+      targetStartDayName: todayDayName,
+      now,
+    });
+
+    setScheduleMeta(res.meta);
+    void saveSchedulePlan(authUser.uid, res.meta).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+
+    if (res.changed && (res.movedCount > 0 || res.unplacedCount > 0)) {
+      const msg =
+        res.unplacedCount > 0
+          ? `Recalcul 09h30 : ${res.movedCount} mission(s) reportée(s), ${res.unplacedCount} hors quota.`
+          : `Recalcul 09h30 : ${res.movedCount} mission(s) reportée(s) sur le reste de la semaine.`;
+      showToast(msg);
+    }
+  }, [
+    cartelStatus,
+    scheduleSynced,
+    isUnlocked,
+    authUser,
+    missionStates,
+    scheduleMeta,
+    recalcClockTick,
+    showToast,
+  ]);
+
+  useEffect(() => {
+    if (
+      didMigrateRewardPricesRef.current ||
+      cartelStatus !== 'ready' ||
+      !isUnlocked ||
+      !authUser ||
+      Object.keys(rewardStocks).length === 0
+    ) {
+      return;
+    }
+
+    didMigrateRewardPricesRef.current = true;
+    const patch: Record<string, RewardStockEntry> = {};
+
+    REWARD_ITEMS.forEach((item) => {
+      const prevDefault = PREVIOUS_REWARD_DEFAULTS[item.key];
+      const existing = rewardStocks[item.key];
+      if (
+        prevDefault !== undefined &&
+        existing &&
+        Number(existing.val) === prevDefault
+      ) {
+        patch[item.key] = {
+          qty: Math.max(0, Number(existing.qty) || 0),
+          val: item.defaultVal,
+        };
+      }
+    });
+
+    if (Object.keys(patch).length === 0) return;
+
+    setRewardStocks((prev) => ({
+      ...prev,
+      ...patch,
+    }));
+    void saveRewardPricesBatch(authUser.uid, patch).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+  }, [cartelStatus, isUnlocked, authUser, rewardStocks]);
 
   const kpis = useMemo(() => {
     let totalCost = 0;
@@ -275,7 +488,7 @@ export default function App() {
 
     WEEKLY_SCHEDULE.forEach((day) => {
       day.missions.forEach((mission) => {
-        const f = missionFin(mission, missionStates);
+        const f = missionFin(mission, missionStates, inventoryPrices);
         if (f.success) successCount++;
         if (f.fail) failCount++;
         totalCost += f.cost;
@@ -296,6 +509,7 @@ export default function App() {
       treasuryMoney,
       rewardStocks,
       inventoryStock,
+      inventoryPrices,
       weaponsStock,
     });
 
@@ -308,7 +522,18 @@ export default function App() {
       rewardsValTotal,
       rewardsItemCount,
     };
-  }, [missionStates, weaponsLossAmount, rewardStocks, treasuryMoney, inventoryStock, weaponsStock]);
+  }, [missionStates, weaponsLossAmount, rewardStocks, treasuryMoney, inventoryStock, inventoryPrices, weaponsStock]);
+
+  const handleGoToOrderPrep = useCallback(() => {
+    setToastState(null);
+    setCurrentTab('inventory');
+    window.setTimeout(() => {
+      const el = document.getElementById('order-prep-panel');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 80);
+  }, []);
 
   const staleWeek = isWeekStale(missionStates);
   const todayText = new Date().toLocaleDateString('fr-FR', {
@@ -509,9 +734,27 @@ export default function App() {
 
     if (prevStatus === '' && next !== '' && mission && INVENTORY_ITEMS.some((i) => i.key === mission.gearKey)) {
       const invItem = INVENTORY_ITEMS.find((i) => i.key === mission.gearKey);
-      if (inventoryPatch) {
+      const itemPrice = getInventoryItemPrice(mission.gearKey, inventoryPrices);
+      const updatedMap = inventoryPatch
+        ? { ...inventoryStock, ...inventoryPatch }
+        : inventoryStock;
+      const stockAlert = buildValidationStockAlert({
+        debitedKeys: inventoryPatch ? [mission.gearKey] : [],
+        missionGearKey: mission.gearKey,
+        nextInventory: updatedMap,
+      });
+
+      if (stockAlert) {
+        const baseMsg = inventoryPatch
+          ? `Mission validée (-1 ${invItem?.name || 'matériel'})`
+          : `Mission validée`;
+        showToast(`${stockAlert.message} · ${baseMsg}`, {
+          variant: stockAlert.variant,
+          withStockShortcut: true,
+        });
+      } else if (inventoryPatch) {
         showToast(
-          `Mission validée — 1× ${invItem?.name || 'matériel'} débité de l'inventaire (-${formatMoney(mission.cost)}).`
+          `Mission validée — 1× ${invItem?.name || 'matériel'} débité de l'inventaire (-${formatMoney(itemPrice)}).`
         );
       } else {
         showToast(`Mission validée (stock ${invItem?.name || 'matériel'} déjà à 0).`);
@@ -564,6 +807,7 @@ export default function App() {
     const inventoryPatch: Record<string, number> = {};
     const nextInventory = { ...inventoryStock };
     const newlyDebitedLabels: string[] = [];
+    const newlyDebitedKeys: string[] = [];
     const allGearKeys = new Set([
       ...Object.keys(prevUsedGear),
       ...Object.keys(payload.usedGear || {}),
@@ -586,6 +830,7 @@ export default function App() {
         if (diff > 0) {
           const gName = INVENTORY_ITEMS.find((i) => i.key === gKey)?.name || gKey;
           newlyDebitedLabels.push(`-${diff} ${gName}`);
+          newlyDebitedKeys.push(gKey);
         }
       }
     });
@@ -758,9 +1003,26 @@ export default function App() {
         : cashGainDiff < 0
           ? ` · Argent Sale : -${formatMoney(Math.abs(cashGainDiff))}`
           : '';
-    showToast(
-      `Mission "${mission.name}" validée (${payload.status === 'success' ? 'Réussie' : 'Échouée'})${gearSummary}${cashSummary} !`
-    );
+
+    const stockAlert = buildValidationStockAlert({
+      debitedKeys: newlyDebitedKeys,
+      missionGearKey: mission.gearKey,
+      nextInventory,
+    });
+
+    if (stockAlert) {
+      showToast(
+        `${stockAlert.message} · Mission "${mission.name}" validée${cashSummary}`,
+        {
+          variant: stockAlert.variant,
+          withStockShortcut: true,
+        }
+      );
+    } else {
+      showToast(
+        `Mission "${mission.name}" validée (${payload.status === 'success' ? 'Réussie' : 'Échouée'})${gearSummary}${cashSummary} !`
+      );
+    }
   };
 
   const handleResetMissionFromModal = (missionId: string) => {
@@ -936,10 +1198,60 @@ export default function App() {
 
   const handleToggleWholeDay = (dayName: string) => {
     if (readonly) return;
-    const dayObj = WEEKLY_SCHEDULE.find((d) => d.day === dayName);
+    const effective = getEffectiveSchedule(missionStates, scheduleMeta);
+    const dayObj = effective.days.find((d) => d.day === dayName);
     if (!dayObj) return;
     const cleared = bulkToggleMissions(dayObj.missions);
     showToast(cleared ? `${dayName} remis à zéro` : `Journée de ${dayName} validée !`);
+  };
+
+  const handleRecalculateScheduleNow = () => {
+    if (readonly || !authUser) return;
+    if (isWeekStale(missionStates)) {
+      showToast('Démarrez d’abord la nouvelle semaine avant de recalculer le planning.');
+      return;
+    }
+    const now = new Date();
+    const targetStartDayName = getCurrentWeekTodayName(missionStates, now) || 'Lundi';
+    const res = computeRecalculatedSchedule({
+      missionStates,
+      currentMeta: scheduleMeta,
+      targetStartDayName,
+      now,
+    });
+    autoRecalcAttemptedDateRef.current = res.meta.lastRecalcDate;
+    setScheduleMeta(res.meta);
+    void saveSchedulePlan(authUser.uid, res.meta).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+
+    if (res.movedCount === 0 && res.unplacedCount === 0) {
+      showToast('Planning à jour : aucune mission en retard à reporter.');
+    } else if (res.unplacedCount > 0) {
+      showToast(
+        `Planning recalculé : ${res.movedCount} reportée(s), ${res.unplacedCount} hors quota règlement.`
+      );
+    } else {
+      showToast(`Planning recalculé : ${res.movedCount} mission(s) répartie(s) sur la semaine !`);
+    }
+  };
+
+  const handleResetScheduleOverrides = () => {
+    if (readonly || !authUser) return;
+    const now = new Date();
+    const todayIso = isoDate(now);
+    const nextMeta: MissionScheduleMeta = {
+      scheduleOverrides: {},
+      unplacedMissionIds: [],
+      lastRecalcDate: todayIso,
+      lastRecalcAt: now.toISOString(),
+    };
+    autoRecalcAttemptedDateRef.current = todayIso;
+    setScheduleMeta(nextMeta);
+    void saveSchedulePlan(authUser.uid, nextMeta).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+    showToast("Planning d'origine restauré !");
   };
 
   const handleToggleAllWeek = () => {
@@ -953,10 +1265,12 @@ export default function App() {
   const handleStartNewWeek = () => {
     if (readonly || !authUser) return;
     const newWeek = isoDate(currentWeekStart());
+    autoRecalcAttemptedDateRef.current = '';
     setMissionStates({ __week: newWeek });
+    setScheduleMeta(EMPTY_SCHEDULE_META);
     setWeaponsLossAmount(0);
     void Promise.all([
-      saveAllMissionEntries(authUser.uid, newWeek, {}),
+      saveAllMissionEntries(authUser.uid, newWeek, {}, EMPTY_SCHEDULE_META),
       saveWeaponsLoss(authUser.uid, 0),
     ]).catch((err) => setSyncError(err instanceof Error ? err : new Error(String(err))));
     showToast('Nouvelle semaine démarrée !');
@@ -965,9 +1279,11 @@ export default function App() {
   const handleConfirmResetWeek = () => {
     if (readonly || !authUser) return;
     const newWeek = isoDate(currentWeekStart());
+    autoRecalcAttemptedDateRef.current = '';
     setMissionStates({ __week: newWeek });
+    setScheduleMeta(EMPTY_SCHEDULE_META);
     setResetModalOpen(false);
-    void saveAllMissionEntries(authUser.uid, newWeek, {}).catch((err) =>
+    void saveAllMissionEntries(authUser.uid, newWeek, {}, EMPTY_SCHEDULE_META).catch((err) =>
       setSyncError(err instanceof Error ? err : new Error(String(err)))
     );
     showToast('Semaine réinitialisée !');
@@ -981,6 +1297,18 @@ export default function App() {
       [key]: nextQty,
     }));
     void saveInventoryItem(authUser.uid, key, nextQty).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+  };
+
+  const handleUpdateItemPrice = (key: string, price: number) => {
+    if (readonly || !authUser) return;
+    const cleanPrice = Math.max(0, Math.round(Number(price) || 0));
+    setInventoryPrices((prev) => ({
+      ...prev,
+      [key]: cleanPrice,
+    }));
+    void saveInventoryItemPrice(authUser.uid, key, cleanPrice).catch((err) =>
       setSyncError(err instanceof Error ? err : new Error(String(err)))
     );
   };
@@ -1159,6 +1487,29 @@ export default function App() {
     );
   };
 
+  const handleApplyOfficialRewardPrices = () => {
+    if (readonly || !authUser) return;
+    const patch: Record<string, RewardStockEntry> = {};
+    REWARD_ITEMS.forEach((item) => {
+      const existing = rewardStocks[item.key];
+      patch[item.key] = {
+        qty: Math.max(0, Number(existing?.qty) || 0),
+        val: item.defaultVal,
+      };
+    });
+    setRewardStocks((prev) => ({
+      ...prev,
+      ...patch,
+    }));
+    void saveRewardPricesBatch(authUser.uid, patch)
+      .then(() => {
+        showToast('Tarifs officiels du receleur mis à jour !');
+      })
+      .catch((err) =>
+        setSyncError(err instanceof Error ? err : new Error(String(err)))
+      );
+  };
+
   const handleUpdateWeaponsLoss = (val: number) => {
     if (readonly || !authUser) return;
     const cleanVal = Math.max(0, Number(val) || 0);
@@ -1206,6 +1557,14 @@ export default function App() {
       setSyncError(err instanceof Error ? err : new Error(String(err)))
     );
     showToast('Membre supprimé.');
+  };
+
+  const handleUpdateMemberRankings = (nextRankings: MemberRankingsMap) => {
+    if (readonly || !authUser) return;
+    setMemberRankings(nextRankings);
+    void saveMemberRankings(authUser.uid, nextRankings).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
   };
 
   const handleVerifySecretCode = async (code: string): Promise<boolean> => {
@@ -1256,9 +1615,11 @@ export default function App() {
   const handleCopyReport = async () => {
     const discordText = buildDiscordReport({
       missionStates,
+      scheduleMeta,
       treasuryMoney,
       rewardStocks,
       inventoryStock,
+      inventoryPrices,
       weaponsStock,
       weaponsLossAmount,
       hierMembers,
@@ -1290,8 +1651,8 @@ export default function App() {
 
   const tabBtnClass = (tab: TabKey) =>
     currentTab === tab
-      ? 'px-3.5 py-2 rounded-lg text-xs font-bold bg-gold text-obsidian transition flex items-center gap-1.5 shadow-md cursor-pointer whitespace-nowrap shrink-0'
-      : 'px-3.5 py-2 rounded-lg text-xs font-bold bg-charcoal hover:bg-zinc-800 text-zinc-300 border border-zinc-700 transition flex items-center gap-1.5 shadow-md cursor-pointer whitespace-nowrap shrink-0';
+      ? 'px-3 py-2 rounded-lg text-xs font-bold bg-charcoal text-gold-light border-b-2 border-crimson border-t border-x border-t-gold/30 border-x-gold/30 transition flex items-center gap-1.5 shadow-md cursor-pointer whitespace-nowrap shrink-0'
+      : 'px-3 py-2 rounded-lg text-xs font-semibold bg-charcoal/70 hover:bg-charcoal text-zinc-300 hover:text-white border border-bronze/40 hover:border-gold/50 transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0';
 
   if (!authReady) {
     return (
@@ -1350,7 +1711,7 @@ export default function App() {
               {authError}
             </div>
           )}
-          <Toast message={toastMessage} />
+          <Toast message={toastState?.message ?? null} />
         </div>
       </div>
     );
@@ -1409,12 +1770,22 @@ export default function App() {
   return (
     <div className="min-h-screen pb-16">
       {/* EN-TÊTE & DASHBOARD GLOBAL */}
-      <header className="sticky top-0 z-40 bg-obsidian/95 backdrop-blur-md border-b border-crimson/60 shadow-2xl">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <header className="sticky top-0 z-40 bg-obsidian/95 backdrop-blur-md border-b border-crimson/70 shadow-2xl">
+        <div className="border-b border-bronze/35 bg-charcoal/80">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-1.5 flex items-center justify-between gap-3 text-[10px] tracking-[0.26em] uppercase">
+            <span className="text-gold-light/90 font-semibold truncate">
+              Traicionados por el Estado · Juramentados por la Sangre
+            </span>
+            <span className="hidden sm:inline text-zinc-400 font-semibold whitespace-nowrap">
+              Discipline · Loyauté · Respect · Fraternité
+            </span>
+          </div>
+        </div>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5">
+          <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3.5">
             {/* Logo & Titre Cartel GTA RP */}
-            <div className="flex items-center gap-4">
-              <div className="relative w-16 h-16 rounded-xl bg-charcoal border-2 border-gold/80 flex items-center justify-center shadow-2xl shadow-crimson/40 shrink-0 overflow-hidden group">
+            <div className="flex items-center gap-3.5">
+              <div className="relative w-14 h-14 rounded-xl bg-charcoal border-2 border-gold/80 flex items-center justify-center shadow-xl shadow-crimson/35 shrink-0 overflow-hidden group">
                 <img
                   src="/assets/emblem.webp"
                   alt="Emblème Los Cerberos"
@@ -1422,50 +1793,49 @@ export default function App() {
                 />
               </div>
               <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-[10px] font-bold tracking-[0.3em] text-red-500 uppercase">
-                    GTA RP • Cartel Paramilitaire
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  <span className="text-[10px] font-bold tracking-[0.28em] text-crimson-light uppercase">
+                    Organisation Paramilitaire · GTA RP
                   </span>
                   <button
                     type="button"
                     onClick={() => setAuthModalOpen(true)}
                     className={
                       isUnlocked
-                        ? 'inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-gold/20 text-gold-light border border-gold/50 hover:bg-gold/30 transition cursor-pointer'
-                        : 'inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-zinc-800 text-zinc-300 border border-zinc-700 hover:border-gold transition cursor-pointer'
+                        ? 'text-[11px] font-bold text-gold-light hover:text-gold underline underline-offset-4 transition cursor-pointer whitespace-nowrap'
+                        : 'text-[11px] font-semibold text-zinc-400 hover:text-gold-light underline underline-offset-4 transition cursor-pointer whitespace-nowrap'
                     }
                   >
-                    {isUnlocked
-                      ? '👑 Éditeur Autorisé (Actif)'
-                      : '🔒 Lecture Seule (Cliquer pour déverrouiller)'}
+                    {isUnlocked ? '👑 Éditeur Actif' : '🔒 Lecture Seule (Déverrouiller)'}
                   </button>
                   <button
                     type="button"
                     onClick={handleSignOut}
                     title={`Connecté en tant que ${authUser.displayName || authUser.email}`}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-zinc-900 text-zinc-400 border border-zinc-800 hover:text-white hover:border-zinc-600 transition cursor-pointer"
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-zinc-500 hover:text-white transition cursor-pointer whitespace-nowrap"
                   >
                     <LogOut className="w-3 h-3" />
                     Déconnexion
                   </button>
                 </div>
-                <h1 className="font-display text-lg sm:text-2xl font-extrabold tracking-wider text-white">
-                  LOS CERBEROS <span className="text-crimson-light font-normal">—</span>{' '}
-                  <span className="text-gold text-sm sm:text-lg font-bold">
-                    JURAMENTADOS POR LA SANGRE
+                <h1 className="font-display text-lg sm:text-2xl font-extrabold tracking-wider text-white mt-0.5">
+                  LOS CERBEROS{' '}
+                  <span className="text-crimson font-normal">—</span>{' '}
+                  <span className="text-gold text-sm sm:text-base font-bold">
+                    GESTION CARTEL
                   </span>
                 </h1>
               </div>
             </div>
 
             {/* Actions globales (Onglets) */}
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => setCurrentTab('planning')}
                 className={tabBtnClass('planning')}
               >
-                <Calendar className="w-4 h-4" />
+                <Calendar className="w-3.5 h-3.5" />
                 Planning
               </button>
               <button
@@ -1473,7 +1843,7 @@ export default function App() {
                 onClick={() => setCurrentTab('inventory')}
                 className={tabBtnClass('inventory')}
               >
-                <Package className="w-4 h-4" />
+                <Package className="w-3.5 h-3.5" />
                 Inventaire
               </button>
               <button
@@ -1481,7 +1851,7 @@ export default function App() {
                 onClick={() => setCurrentTab('treasury')}
                 className={tabBtnClass('treasury')}
               >
-                <Wallet className="w-4 h-4" />
+                <Wallet className="w-3.5 h-3.5" />
                 Trésorerie
               </button>
               <button
@@ -1489,32 +1859,40 @@ export default function App() {
                 onClick={() => setCurrentTab('accounting')}
                 className={tabBtnClass('accounting')}
               >
-                <BarChart3 className="w-4 h-4" />
-                Comptabilité (Bilan)
+                <BarChart3 className="w-3.5 h-3.5" />
+                Comptabilité
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentTab('ranking')}
+                className={tabBtnClass('ranking')}
+              >
+                <Trophy className="w-3.5 h-3.5" />
+                Classement
               </button>
               <button
                 type="button"
                 onClick={() => setCurrentTab('hierarchy')}
                 className={tabBtnClass('hierarchy')}
               >
-                <Users className="w-4 h-4" />
+                <Users className="w-3.5 h-3.5" />
                 Hiérarchie
               </button>
               <button
                 type="button"
                 onClick={handleCopyReport}
-                className="px-3.5 py-2 rounded-lg text-xs font-bold bg-gold hover:bg-gold-light text-obsidian transition flex items-center gap-1.5 shadow-md shadow-gold/10 cursor-pointer whitespace-nowrap shrink-0"
+                className="px-3 py-2 rounded-lg text-xs font-bold bg-gold hover:bg-gold-light text-obsidian transition flex items-center gap-1.5 shadow-md shadow-gold/10 cursor-pointer whitespace-nowrap shrink-0"
               >
-                <ClipboardCopy className="w-4 h-4" />
+                <ClipboardCopy className="w-3.5 h-3.5" />
                 Copier Bilan
               </button>
               {isUnlocked && (
                 <button
                   type="button"
                   onClick={() => setResetModalOpen(true)}
-                  className="px-3.5 py-2 rounded-lg text-xs font-bold bg-gradient-to-r from-crimson/35 to-crimson-dark/50 hover:from-crimson/50 hover:to-crimson-dark/70 text-red-200 border border-crimson-light/50 transition flex items-center gap-1.5 shadow-sm cursor-pointer whitespace-nowrap shrink-0"
+                  className="px-3 py-2 rounded-lg text-xs font-bold bg-crimson-dark/60 hover:bg-crimson text-red-100 border border-crimson-light/50 transition flex items-center gap-1.5 shadow-sm cursor-pointer whitespace-nowrap shrink-0"
                 >
-                  <RefreshCw className="w-4 h-4" />
+                  <RefreshCw className="w-3.5 h-3.5" />
                   Reset
                 </button>
               )}
@@ -1522,8 +1900,8 @@ export default function App() {
           </div>
 
           {/* KPIs / COMPTEURS EN TEMPS RÉEL */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 mt-4">
-            <div className="bg-charcoal/90 gold-border rounded-xl p-3 flex flex-col justify-between">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 mt-3.5">
+            <div className="bg-charcoal/95 bronze-border rounded-xl p-3 flex flex-col justify-between">
               <span className="text-[10px] uppercase tracking-wider text-zinc-400 font-semibold">
                 Missions Réussies
               </span>
@@ -1531,18 +1909,18 @@ export default function App() {
                 <span className="font-display text-lg sm:text-xl font-extrabold text-white tabular-nums">
                   {kpis.successCount} / {TOTAL_WEEKLY_MISSIONS}
                 </span>
-                <span className="text-[10px] text-red-400 font-mono tabular-nums">
+                <span className="text-[10px] text-crimson-light font-mono tabular-nums">
                   ❌ {kpis.failCount} échec{kpis.failCount > 1 ? 's' : ''}
                 </span>
               </div>
             </div>
 
-            <div className="bg-charcoal/90 gold-border rounded-xl p-3 flex flex-col justify-between">
+            <div className="bg-charcoal/95 gold-border rounded-xl p-3 flex flex-col justify-between">
               <span className="text-[10px] uppercase tracking-wider text-zinc-400 font-semibold">
                 Trésorerie &amp; Actifs Totaux
               </span>
               <div className="mt-1.5 flex items-baseline justify-between">
-                <span className="font-display text-lg sm:text-xl font-extrabold text-amber-300 tabular-nums">
+                <span className="font-display text-lg sm:text-xl font-extrabold text-gold tabular-nums">
                   {formatMoney(kpis.totalWealth)}
                 </span>
                 <span className="text-[10px] text-zinc-500 font-mono">Coffre Cartel</span>
@@ -1553,9 +1931,9 @@ export default function App() {
               type="button"
               onClick={() => setCurrentTab('treasury')}
               title="Voir le détail des objets à vendre dans la Trésorerie"
-              className="bg-charcoal/90 border border-amber-500/40 hover:border-gold rounded-xl p-3 flex flex-col justify-between text-left transition cursor-pointer"
+              className="bg-charcoal/95 border border-gold/45 hover:border-gold rounded-xl p-3 flex flex-col justify-between text-left transition cursor-pointer"
             >
-              <span className="text-[10px] uppercase tracking-wider text-amber-300 font-semibold">
+              <span className="text-[10px] uppercase tracking-wider text-gold-light font-semibold">
                 💎 Objets à Vendre (Recel)
               </span>
               <div className="mt-1.5 flex items-baseline justify-between gap-2">
@@ -1568,7 +1946,7 @@ export default function App() {
               </div>
             </button>
 
-            <div className="bg-charcoal/90 gold-border rounded-xl p-3 flex flex-col justify-between">
+            <div className="bg-charcoal/95 bronze-border rounded-xl p-3 flex flex-col justify-between">
               <span className="text-[10px] uppercase tracking-wider text-zinc-400 font-semibold">
                 Gains Bruts Encaissés
               </span>
@@ -1580,7 +1958,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="bg-charcoal/90 gold-border rounded-xl p-3 flex flex-col justify-between">
+            <div className="bg-charcoal/95 bronze-border rounded-xl p-3 flex flex-col justify-between">
               <span className="text-[10px] uppercase tracking-wider text-zinc-400 font-semibold">
                 Bénéfice Net du Cartel
               </span>
@@ -1609,13 +1987,13 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
         {/* BANNIÈRE SEMAINE */}
         {staleWeek ? (
-          <div className="bg-amber-500/10 border border-amber-500/40 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-amber-200 text-xs">
+          <div className="bg-gold/10 border border-gold/45 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-gold-light text-xs">
             <span>
               ⚠️ Les données affichées sont celles de la{' '}
               <strong>semaine {weekRangeText(missionStates)}</strong>. Une nouvelle semaine a commencé (aujourd&apos;hui : {todayText}). Pense à <strong>Copier Bilan</strong> avant de passer à la suite.
             </span>
             {readonly ? (
-              <span className="italic text-amber-300/80">
+              <span className="italic text-gold-light/80">
                 Un membre autorisé doit démarrer la nouvelle semaine.
               </span>
             ) : (
@@ -1629,7 +2007,7 @@ export default function App() {
             )}
           </div>
         ) : (
-          <div className="bg-charcoal/90 gold-border rounded-xl px-4 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
+          <div className="bg-charcoal/95 gold-border rounded-xl px-4 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
             <span className="text-zinc-300">
               📅 <strong className="text-gold">Semaine {weekRangeText(missionStates)}</strong>
             </span>
@@ -1639,9 +2017,9 @@ export default function App() {
 
         {/* BANNIÈRE AVERTISSEMENT LECTURE SEULE */}
         {readonly && (
-          <div className="bg-amber-500/10 border border-amber-500/40 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-amber-200 text-xs">
+          <div className="bg-gold/10 border border-gold/40 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-gold-light text-xs">
             <div className="flex items-center gap-2.5">
-              <Lock className="w-5 h-5 text-amber-400 shrink-0" />
+              <Lock className="w-5 h-5 text-gold shrink-0" />
               <span>
                 <strong>Accès Consultation (Lecture Seule) :</strong> Tout le cartel voit le planning et la comptabilité en temps réel. Seuls les membres autorisés avec le code secret peuvent modifier.
               </span>
@@ -1659,26 +2037,33 @@ export default function App() {
         {currentTab === 'planning' && (
           <PlanningView
             missionStates={missionStates}
+            scheduleMeta={scheduleMeta}
             inventoryStock={inventoryStock}
+            inventoryPrices={inventoryPrices}
             members={hierMembers}
             readonly={readonly}
             onOpenMissionValidation={handleOpenMissionValidation}
             onResetMission={handleResetMissionFromModal}
             onToggleWholeDay={handleToggleWholeDay}
             onToggleAllWeek={handleToggleAllWeek}
+            onRecalculateSchedule={handleRecalculateScheduleNow}
+            onResetScheduleOverrides={handleResetScheduleOverrides}
           />
         )}
 
         {currentTab === 'inventory' && (
           <InventoryView
             inventoryStock={inventoryStock}
+            inventoryPrices={inventoryPrices}
             weaponsStock={weaponsStock}
             rewardStocks={rewardStocks}
             missionStates={missionStates}
+            scheduleMeta={scheduleMeta}
             treasuryMoney={treasuryMoney}
             members={hierMembers}
             readonly={readonly}
             onUpdateStock={handleUpdateStock}
+            onUpdateItemPrice={handleUpdateItemPrice}
             onResetStock={handleResetStock}
             onReceiveOrder={handleReceiveOrder}
             onSaveWeapon={handleSaveWeapon}
@@ -1695,6 +2080,7 @@ export default function App() {
             treasuryMoney={treasuryMoney}
             rewardStocks={rewardStocks}
             inventoryStock={inventoryStock}
+            inventoryPrices={inventoryPrices}
             weaponsStock={weaponsStock}
             missionStates={missionStates}
             weaponsLossAmount={weaponsLossAmount}
@@ -1703,18 +2089,34 @@ export default function App() {
             onUpdateTreasuryMoney={handleUpdateTreasuryMoney}
             onUpdateRewardQty={handleUpdateRewardQty}
             onUpdateRewardValue={handleUpdateRewardValue}
+            onApplyOfficialRewardPrices={handleApplyOfficialRewardPrices}
           />
         )}
 
         {currentTab === 'accounting' && (
           <AccountingView
             missionStates={missionStates}
+            scheduleMeta={scheduleMeta}
             members={hierMembers}
             weaponsStock={weaponsStock}
             weaponsLossAmount={weaponsLossAmount}
+            inventoryPrices={inventoryPrices}
             readonly={readonly}
             onUpdateWeaponsLoss={handleUpdateWeaponsLoss}
             onLoseWeaponGlobal={handleLoseWeaponGlobal}
+          />
+        )}
+
+        {currentTab === 'ranking' && (
+          <RankingView
+            members={hierMembers}
+            missionStates={missionStates}
+            weaponsStock={weaponsStock}
+            memberRankings={memberRankings}
+            inventoryPrices={inventoryPrices}
+            readonly={readonly}
+            onUpdateMemberRankings={handleUpdateMemberRankings}
+            onShowToast={showToast}
           />
         )}
 
@@ -1728,6 +2130,13 @@ export default function App() {
           />
         )}
       </main>
+
+      <footer className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-4 pb-8 border-t border-bronze/30 flex flex-col sm:flex-row items-center justify-between gap-2 text-[10px] tracking-[0.24em] uppercase text-zinc-500">
+        <span className="text-gold/80 font-semibold">
+          TRAICIONADOS POR EL ESTADO, JURAMENTADOS POR LA SANGRE
+        </span>
+        <span>LOS CERBEROS · GTA RP</span>
+      </footer>
 
       <AuthModal
         open={authModalOpen}
@@ -1755,6 +2164,7 @@ export default function App() {
             : {}
         }
         inventoryStock={inventoryStock}
+        inventoryPrices={inventoryPrices}
         weaponsStock={weaponsStock}
         rewardStocks={rewardStocks}
         treasuryMoney={treasuryMoney}
@@ -1764,7 +2174,13 @@ export default function App() {
         onResetMission={handleResetMissionFromModal}
       />
 
-      <Toast message={toastMessage} />
+      <Toast
+        message={toastState?.message ?? null}
+        variant={toastState?.variant}
+        actionLabel={toastState?.withStockShortcut ? 'Voir stock' : undefined}
+        onAction={toastState?.withStockShortcut ? handleGoToOrderPrep : undefined}
+        onDismiss={() => setToastState(null)}
+      />
     </div>
   );
 }

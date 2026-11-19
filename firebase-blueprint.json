@@ -87,7 +87,7 @@
     },
     "MissionsState": {
       "title": "MissionsState",
-      "description": "Shared weekly mission statuses, gains, losses, and selected players",
+      "description": "Shared weekly mission statuses, redistributed daily schedule overrides, gains, losses, and selected players",
       "type": "object",
       "properties": {
         "week": {
@@ -98,6 +98,23 @@
         },
         "entries": {
           "type": "object"
+        },
+        "scheduleOverrides": {
+          "type": "object",
+          "description": "Map of missionId to reassigned day name after 09:30 automatic recalculation"
+        },
+        "unplacedMissionIds": {
+          "type": "array",
+          "description": "Bounded list of overdue mission IDs that cannot be rescheduled without exceeding regulation limits"
+        },
+        "lastRecalcDate": {
+          "type": "string",
+          "maxLength": 20,
+          "pattern": "^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "lastRecalcAt": {
+          "type": "string",
+          "maxLength": 40
         },
         "updatedAt": {
           "type": "string",
@@ -114,11 +131,15 @@
     },
     "InventoryState": {
       "title": "InventoryState",
-      "description": "Shared cartel equipment inventory stock counts and weapons arsenal",
+      "description": "Shared cartel equipment inventory stock counts, custom item prices, and weapons arsenal",
       "type": "object",
       "properties": {
         "stock": {
           "type": "object"
+        },
+        "prices": {
+          "type": "object",
+          "description": "Custom unit prices overrides for inventory equipment items"
         },
         "weapons": {
           "type": "object",
@@ -169,11 +190,15 @@
     },
     "HierarchyState": {
       "title": "HierarchyState",
-      "description": "Shared cartel roster and hierarchy assignments",
+      "description": "Shared cartel roster, hierarchy assignments, and member ranking adjustments",
       "type": "object",
       "properties": {
         "members": {
           "type": "object"
+        },
+        "rankings": {
+          "type": "object",
+          "description": "Per-member bonus/malus points, evaluation notes, and manual distinctions"
         },
         "updatedAt": {
           "type": "string",

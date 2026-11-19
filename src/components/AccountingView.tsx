@@ -1,6 +1,12 @@
 import React, { useMemo, useState } from 'react';
 import { HIER_UNITS, WEEKLY_SCHEDULE } from '@/src/data/cartelData';
-import type { HierarchyMember, MissionStates, WeaponsStock } from '@/src/types/cartel';
+import type {
+  HierarchyMember,
+  InventoryPrices,
+  MissionScheduleMeta,
+  MissionStates,
+  WeaponsStock,
+} from '@/src/types/cartel';
 import {
   dayDate,
   fmtLong,
@@ -12,12 +18,15 @@ import {
   missionFin,
   netClass,
 } from '@/src/utils/finance';
+import { getEffectiveSchedule } from '@/src/utils/schedule';
 
 interface AccountingViewProps {
   missionStates: MissionStates;
+  scheduleMeta?: MissionScheduleMeta;
   members: HierarchyMember[];
   weaponsStock: WeaponsStock;
   weaponsLossAmount: number;
+  inventoryPrices?: InventoryPrices;
   readonly: boolean;
   onUpdateWeaponsLoss: (val: number) => void;
   onLoseWeaponGlobal: (weaponId: string) => void;
@@ -25,9 +34,11 @@ interface AccountingViewProps {
 
 export const AccountingView: React.FC<AccountingViewProps> = ({
   missionStates,
+  scheduleMeta,
   members,
   weaponsStock,
   weaponsLossAmount,
+  inventoryPrices,
   readonly,
   onUpdateWeaponsLoss,
   onLoseWeaponGlobal,
@@ -50,7 +61,12 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   let totExtra = 0;
   let totGains = 0;
 
-  const dayRows = WEEKLY_SCHEDULE.map((dayObj) => {
+  const effectiveDays = useMemo(
+    () => getEffectiveSchedule(missionStates, scheduleMeta).days,
+    [missionStates, scheduleMeta]
+  );
+
+  const dayRows = effectiveDays.map((dayObj) => {
     let ok = 0;
     let ko = 0;
     let cost = 0;
@@ -58,7 +74,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
     let gains = 0;
 
     dayObj.missions.forEach((m) => {
-      const f = missionFin(m, missionStates);
+      const f = missionFin(m, missionStates, inventoryPrices);
       if (f.success) ok++;
       if (f.fail) ko++;
       cost += f.cost;
@@ -90,7 +106,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   const playerStats = new Map<string, { ok: number; ko: number }>();
   WEEKLY_SCHEDULE.forEach((dayObj) => {
     dayObj.missions.forEach((m) => {
-      const f = missionFin(m, missionStates);
+      const f = missionFin(m, missionStates, inventoryPrices);
       if (!f.done) return;
       const entry = getMissionEntry(missionStates, m.id);
       const players = Array.isArray(entry.players) ? entry.players : [];

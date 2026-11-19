@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { INVENTORY_ITEMS, REWARD_ITEMS } from '@/src/data/cartelData';
 import type {
   HierarchyMember,
+  InventoryPrices,
   InventoryStock,
   LostWeaponRecord,
   Mission,
@@ -10,7 +11,13 @@ import type {
   TreasuryMoney,
   WeaponsStock,
 } from '@/src/types/cartel';
-import { formatMoney, getStatus, getWeaponHolderName } from '@/src/utils/finance';
+import {
+  formatMoney,
+  getInventoryItemPrice,
+  getMissionCost,
+  getStatus,
+  getWeaponHolderName,
+} from '@/src/utils/finance';
 
 export interface MissionValidationPayload {
   missionId: string;
@@ -32,6 +39,7 @@ interface MissionValidationModalProps {
   initialStatus?: 'success' | 'fail';
   entry: MissionStateEntry;
   inventoryStock: InventoryStock;
+  inventoryPrices?: InventoryPrices;
   weaponsStock: WeaponsStock;
   rewardStocks: RewardStocks;
   treasuryMoney: TreasuryMoney;
@@ -70,6 +78,7 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
   initialStatus,
   entry,
   inventoryStock,
+  inventoryPrices,
   weaponsStock,
   rewardStocks,
   treasuryMoney,
@@ -249,7 +258,8 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
   const weaponsLossVal = lostWeapons.reduce((s, w) => s + Math.max(0, Number(w.value) || 0), 0);
   const parsedCashLoss = Math.max(0, Number(cashLoss) || 0);
   const totalMissionExtra = weaponsLossVal + parsedCashLoss;
-  const netEstimate = totalMissionGain - mission.cost - totalMissionExtra;
+  const missionCost = getMissionCost(mission, inventoryPrices);
+  const netEstimate = totalMissionGain - missionCost - totalMissionExtra;
 
   const chosenWeaponId =
     selectedWeaponId && availableWeapons.some((w) => w.id === selectedWeaponId)
@@ -316,14 +326,21 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
     const prevQty = prevUsedGear[item.key] || 0;
     const maxAvail = getMaxGearForKey(item.key);
     const remainingAfter = Math.max(0, maxAvail - qty);
+    const isLastHeistPack = item.category === 'heist_pack' && qty > 0 && remainingAfter === 0;
+    const isToolEmpty = item.category === 'tool' && qty > 0 && remainingAfter === 0;
+    const isToolLastOne = item.category === 'tool' && qty > 0 && remainingAfter === 1;
 
     return (
       <div
         key={item.key}
         className={`flex items-center justify-between gap-3 flex-wrap rounded-lg border px-3 py-2 text-xs ${
-          qty > 0
-            ? 'bg-amber-500/10 border-amber-500/40'
-            : 'bg-zinc-950/70 border-zinc-800'
+          isLastHeistPack || isToolEmpty
+            ? 'bg-red-950/35 border-red-500/50'
+            : isToolLastOne
+              ? 'bg-amber-500/15 border-amber-400/60'
+              : qty > 0
+                ? 'bg-amber-500/10 border-amber-500/40'
+                : 'bg-zinc-950/70 border-zinc-800'
         }`}
       >
         <div className="min-w-0">
@@ -332,6 +349,21 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
             {prevQty > 0 && (
               <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[10px] text-zinc-300 font-normal">
                 Déjà débité : {prevQty}
+              </span>
+            )}
+            {isLastHeistPack && (
+              <span className="px-1.5 py-0.5 rounded bg-red-500/25 border border-red-500/50 text-[10px] text-red-200 font-bold">
+                🚨 Dernier pack en stock !
+              </span>
+            )}
+            {isToolEmpty && (
+              <span className="px-1.5 py-0.5 rounded bg-red-500/25 border border-red-500/50 text-[10px] text-red-200 font-bold">
+                🚨 Stock épuisé après validation
+              </span>
+            )}
+            {isToolLastOne && (
+              <span className="px-1.5 py-0.5 rounded bg-amber-500/25 border border-amber-400/50 text-[10px] text-amber-200 font-bold">
+                ⚠️ Plus que 1 restant après
               </span>
             )}
           </div>
@@ -393,7 +425,14 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
               {mission.name}
             </h3>
             <p className="text-xs text-zinc-400 mt-0.5">
-              👥 {mission.crims} · ⏱️ {mission.wait} · 📦 {mission.gearName}
+              👥 {mission.crims} · ⏱️ {mission.wait} · 📦{' '}
+              {mission.gearKey === 'drg'
+                ? `Clé USB 3.1 (${
+                    getInventoryItemPrice('drg', inventoryPrices) > 0
+                      ? formatMoney(getInventoryItemPrice('drg', inventoryPrices))
+                      : 'Prix à définir'
+                  })`
+                : mission.gearName}
             </p>
           </div>
           <button
@@ -737,7 +776,7 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
           <div className="text-xs space-y-0.5 tabular-nums">
             <div className="text-zinc-400">
               Gains : <strong className="text-emerald-400">+{formatMoney(totalMissionGain)}</strong> ·
-              Matériel : <strong className="text-amber-300">-{formatMoney(mission.cost)}</strong> ·
+              Matériel : <strong className="text-amber-300">-{formatMoney(missionCost)}</strong> ·
               Pertes : <strong className="text-red-400">-{formatMoney(totalMissionExtra)}</strong>
             </div>
             <div className="font-bold text-white">

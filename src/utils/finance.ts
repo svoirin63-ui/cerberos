@@ -1,16 +1,22 @@
 import {
   DAY_NAMES,
+  DISTINCTION_DEFS,
   INVENTORY_ITEMS,
+  RANK_LEVELS,
   REWARD_ITEMS,
   TOTAL_WEEKLY_MISSIONS,
   WEEKLY_SCHEDULE,
 } from '@/src/data/cartelData';
 import type {
+  DistinctionKey,
   GearKey,
   HierarchyMember,
+  InventoryPrices,
   InventoryStock,
+  MemberRankingsMap,
   Mission,
   MissionFinance,
+  MissionScheduleMeta,
   MissionStateEntry,
   MissionStates,
   MissionStatus,
@@ -18,6 +24,7 @@ import type {
   TreasuryMoney,
   WeaponsStock,
 } from '@/src/types/cartel';
+import { getEffectiveSchedule } from '@/src/utils/schedule';
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0');
@@ -105,13 +112,42 @@ export function getStatus(st?: MissionStateEntry): MissionStatus {
   return st.completed ? 'success' : '';
 }
 
-export function missionFin(m: Mission, missionStates: MissionStates): MissionFinance {
+export function getInventoryItemPrice(
+  key: string,
+  inventoryPrices?: InventoryPrices
+): number {
+  if (inventoryPrices && inventoryPrices[key] !== undefined) {
+    return Math.max(0, Number(inventoryPrices[key]) || 0);
+  }
+  const found = INVENTORY_ITEMS.find((i) => i.key === key);
+  return found ? found.price : 0;
+}
+
+export function getMissionCost(
+  m: Mission,
+  inventoryPrices?: InventoryPrices
+): number {
+  if (
+    m.gearKey &&
+    m.gearKey !== 'none' &&
+    INVENTORY_ITEMS.some((i) => i.key === m.gearKey)
+  ) {
+    return getInventoryItemPrice(m.gearKey, inventoryPrices);
+  }
+  return Math.max(0, Number(m.cost) || 0);
+}
+
+export function missionFin(
+  m: Mission,
+  missionStates: MissionStates,
+  inventoryPrices?: InventoryPrices
+): MissionFinance {
   const st = getMissionEntry(missionStates, m.id);
   const status = getStatus(st);
   const done = status !== '';
   const success = status === 'success';
   const fail = status === 'fail';
-  const cost = done ? m.cost : 0;
+  const cost = done ? getMissionCost(m, inventoryPrices) : 0;
   const gain = success ? Number(st.gain) || 0 : 0;
   const extra = done ? Number(st.extra) || 0 : 0;
   return {
@@ -137,10 +173,164 @@ export function checkStockAvailability(
   return { available: currentStock > 0, count: currentStock };
 }
 
-export function calcInventoryTotalValue(inventoryStock: InventoryStock): number {
+export interface ItemAutonomyInfo {
+  key: string;
+  coveredDays: number;
+  hasMoreThan30: boolean;
+  ruptureDayName: string | null;
+  neededPerWeek: number;
+  todayNeeded: number;
+  todayShortage: number;
+}
+
+export interface StockAutonomyResult {
+  startDay: string;
+  minDaysCovered: number;
+  allOver30Days: boolean;
+  limitingItems: Array<{ key: string; name: string; coveredDays: number; ruptureDayName: string | null }>;
+  byKey: Record<string, ItemAutonomyInfo>;
+}
+
+export function calcStockAutonomy(params: {
+  inventoryStock: InventoryStock;
+  missionStates: MissionStates;
+  scheduleMeta?: MissionScheduleMeta;
+  startDayName?: string;
+  excludeDone?: boolean;
+}): StockAutonomyResult {
+  const { inventoryStock, missionStates, scheduleMeta, startDayName, excludeDone = true } = params;
+  const detectedToday = DAY_NAMES.find((d) => isTodayName(d, missionStates)) || 'Lundi';
+  const safeStartDay =
+    startDayName && DAY_NAMES.includes(startDayName) ? startDayName : detectedToday;
+  const startIdx = Math.max(0, DAY_NAMES.indexOf(safeStartDay));
+  const effectiveDays = getEffectiveSchedule(missionStates, scheduleMeta).days;
+
+  // Weekly baseline requirement per gear key
+  const weeklyNeeds: Record<string, number> = {};
+  WEEKLY_SCHEDULE.forEach((day) => {
+    day.missions.forEach((m) => {
+      if (m.gearKey === 'none') return;
+      if (!INVENTORY_ITEMS.some((i) => i.key === m.gearKey)) return;
+      weeklyNeeds[m.gearKey] = (weeklyNeeds[m.gearKey] || 0) + 1;
+    });
+  });
+
+  // Remaining mission requirement for a given simulated day offset d (0..34)
+  const MAX_SIM_DAYS = 35;
+  const byKey: Record<string, ItemAutonomyInfo> = {};
+
+  INVENTORY_ITEMS.forEach((item) => {
+    const startStock = Math.max(0, Math.floor(Number(inventoryStock[item.key]) || 0));
+    const neededPerWeek = weeklyNeeds[item.key] || 0;
+
+    // First day requirement
+    const firstSchedule = effectiveDays[startIdx] || WEEKLY_SCHEDULE[startIdx];
+    let todayNeeded = 0;
+    if (firstSchedule) {
+      firstSchedule.missions.forEach((m) => {
+        if (m.gearKey !== item.key) return;
+        if (excludeDone && getStatus(getMissionEntry(missionStates, m.id)) !== '') return;
+        todayNeeded++;
+      });
+    }
+    const todayShortage = Math.max(0, todayNeeded - startStock);
+
+    if (neededPerWeek === 0) {
+      byKey[item.key] = {
+        key: item.key,
+        coveredDays: 30,
+        hasMoreThan30: true,
+        ruptureDayName: null,
+        neededPerWeek: 0,
+        todayNeeded: 0,
+        todayShortage: 0,
+      };
+      return;
+    }
+
+    let remaining = startStock;
+    let coveredDays = 0;
+    let ruptureDayName: string | null = null;
+
+    for (let d = 0; d < MAX_SIM_DAYS; d++) {
+      const rawIdx = startIdx + d;
+      const dayIdx = rawIdx % 7;
+      const isNextCycle = rawIdx >= 7;
+      const schedule = isNextCycle
+        ? WEEKLY_SCHEDULE[dayIdx]
+        : effectiveDays[dayIdx] || WEEKLY_SCHEDULE[dayIdx];
+      let dayNeed = 0;
+      if (schedule) {
+        schedule.missions.forEach((m) => {
+          if (m.gearKey !== item.key) return;
+          if (!isNextCycle && excludeDone && getStatus(getMissionEntry(missionStates, m.id)) !== '') {
+            return;
+          }
+          dayNeed++;
+        });
+      }
+
+      if (remaining >= dayNeed) {
+        remaining -= dayNeed;
+        coveredDays++;
+      } else {
+        ruptureDayName = schedule?.day || null;
+        break;
+      }
+    }
+
+    const hasMoreThan30 = coveredDays >= 31;
+    byKey[item.key] = {
+      key: item.key,
+      coveredDays: hasMoreThan30 ? 30 : coveredDays,
+      hasMoreThan30,
+      ruptureDayName: hasMoreThan30 ? null : ruptureDayName,
+      neededPerWeek,
+      todayNeeded,
+      todayShortage,
+    };
+  });
+
+  const scheduledEntries = INVENTORY_ITEMS.filter(
+    (item) => (weeklyNeeds[item.key] || 0) > 0
+  ).map((item) => ({
+    item,
+    info: byKey[item.key],
+  }));
+
+  const minDaysCovered =
+    scheduledEntries.length > 0
+      ? Math.min(...scheduledEntries.map((e) => e.info.coveredDays))
+      : 30;
+  const allOver30Days =
+    scheduledEntries.length > 0 && scheduledEntries.every((e) => e.info.hasMoreThan30);
+
+  const limitingItems = scheduledEntries
+    .filter((e) => !allOver30Days && e.info.coveredDays === minDaysCovered)
+    .map((e) => ({
+      key: e.item.key,
+      name: e.item.name,
+      coveredDays: e.info.coveredDays,
+      ruptureDayName: e.info.ruptureDayName,
+    }));
+
+  return {
+    startDay: safeStartDay,
+    minDaysCovered,
+    allOver30Days,
+    limitingItems,
+    byKey,
+  };
+}
+
+export function calcInventoryTotalValue(
+  inventoryStock: InventoryStock,
+  inventoryPrices?: InventoryPrices
+): number {
   return INVENTORY_ITEMS.reduce((sum, item) => {
     const qty = Math.max(0, Number(inventoryStock[item.key]) || 0);
-    return sum + qty * item.price;
+    const price = getInventoryItemPrice(item.key, inventoryPrices);
+    return sum + qty * price;
   }, 0);
 }
 
@@ -175,36 +365,213 @@ export function calcTotalWealth(params: {
   treasuryMoney: TreasuryMoney;
   rewardStocks: RewardStocks;
   inventoryStock: InventoryStock;
+  inventoryPrices?: InventoryPrices;
   weaponsStock?: WeaponsStock;
 }): number {
-  const { treasuryMoney, rewardStocks, inventoryStock, weaponsStock = {} } = params;
+  const {
+    treasuryMoney,
+    rewardStocks,
+    inventoryStock,
+    inventoryPrices,
+    weaponsStock = {},
+  } = params;
   return (
     Math.max(0, Number(treasuryMoney.legal) || 0) +
     Math.max(0, Number(treasuryMoney.illegal) || 0) +
     calcRewardsTotalValue(rewardStocks) +
-    calcInventoryTotalValue(inventoryStock) +
+    calcInventoryTotalValue(inventoryStock, inventoryPrices) +
     calcWeaponsTotalValue(weaponsStock)
   );
 }
 
+export interface RankedMemberEntry {
+  member: HierarchyMember;
+  rank: number;
+  missionsOk: number;
+  missionsKo: number;
+  missionsTotal: number;
+  heistsOk: number;
+  smallOpsOk: number;
+  estimatedRevenue: number;
+  weaponsHeldCount: number;
+  weaponsHeldValue: number;
+  autoPoints: number;
+  bonusPoints: number;
+  totalPoints: number;
+  levelTitle: string;
+  autoBadges: DistinctionKey[];
+  manualBadges: DistinctionKey[];
+  unlockedBadges: DistinctionKey[];
+  note: string;
+}
+
+export function computeMemberLeaderboard(params: {
+  members: HierarchyMember[];
+  missionStates: MissionStates;
+  weaponsStock: WeaponsStock;
+  memberRankings: MemberRankingsMap;
+  inventoryPrices?: InventoryPrices;
+}): RankedMemberEntry[] {
+  const { members, missionStates, weaponsStock, memberRankings, inventoryPrices } = params;
+  const stats = new Map<
+    string,
+    {
+      missionsOk: number;
+      missionsKo: number;
+      heistsOk: number;
+      smallOpsOk: number;
+      estimatedRevenue: number;
+    }
+  >();
+
+  WEEKLY_SCHEDULE.forEach((dayObj) => {
+    dayObj.missions.forEach((m) => {
+      const f = missionFin(m, missionStates, inventoryPrices);
+      if (!f.done) return;
+      const entry = getMissionEntry(missionStates, m.id);
+      const players = Array.isArray(entry.players) ? entry.players : [];
+      if (players.length === 0) return;
+      const revShare = f.success ? Math.round(f.gain / players.length) : 0;
+
+      players.forEach((pid) => {
+        const cur = stats.get(pid) || {
+          missionsOk: 0,
+          missionsKo: 0,
+          heistsOk: 0,
+          smallOpsOk: 0,
+          estimatedRevenue: 0,
+        };
+        if (f.success) {
+          cur.missionsOk++;
+          if (m.major) cur.heistsOk++;
+          else cur.smallOpsOk++;
+          cur.estimatedRevenue += revShare;
+        } else if (f.fail) {
+          cur.missionsKo++;
+        }
+        stats.set(pid, cur);
+      });
+    });
+  });
+
+  const weaponsByHolder = new Map<string, { count: number; value: number }>();
+  Object.values(weaponsStock).forEach((w) => {
+    if (!w || !w.holderId || w.holderId === 'coffre') return;
+    const qty = Math.max(0, Number(w.qty) || 0);
+    const val = Math.max(0, Number(w.value) || 0);
+    if (qty <= 0) return;
+    const cur = weaponsByHolder.get(w.holderId) || { count: 0, value: 0 };
+    cur.count += qty;
+    cur.value += qty * val;
+    weaponsByHolder.set(w.holderId, cur);
+  });
+
+  const validBadgeKeys = new Set(DISTINCTION_DEFS.map((d) => d.key));
+
+  const preliminary = members.map((member) => {
+    const st = stats.get(member.id) || {
+      missionsOk: 0,
+      missionsKo: 0,
+      heistsOk: 0,
+      smallOpsOk: 0,
+      estimatedRevenue: 0,
+    };
+    const wp = weaponsByHolder.get(member.id) || { count: 0, value: 0 };
+    const adj = memberRankings[member.id];
+    const bonusPoints = adj ? Math.trunc(Number(adj.bonusPoints) || 0) : 0;
+    const manualBadges = Array.isArray(adj?.manualBadges)
+      ? adj.manualBadges.filter((b): b is DistinctionKey => validBadgeKeys.has(b))
+      : [];
+    const note = typeof adj?.note === 'string' ? adj.note.trim() : '';
+
+    const autoPoints = st.smallOpsOk * 100 + st.heistsOk * 250 + st.missionsKo * 25;
+    const totalPoints = Math.max(0, autoPoints + bonusPoints);
+    const missionsTotal = st.missionsOk + st.missionsKo;
+
+    const levelObj =
+      RANK_LEVELS.find((lvl) => totalPoints >= lvl.minPoints) ||
+      RANK_LEVELS[RANK_LEVELS.length - 1];
+
+    const autoBadges: DistinctionKey[] = [];
+    if (missionsTotal >= 10) autoBadges.push('sang_fidele');
+    if (st.missionsOk >= 5) autoBadges.push('frere_armes');
+    if (st.smallOpsOk >= 3) autoBadges.push('loup_solitaire');
+    if (st.heistsOk >= 2) autoBadges.push('stratege');
+    if (totalPoints >= 1200) autoBadges.push('homme_confiance');
+    if (totalPoints >= 2500) autoBadges.push('legende');
+
+    return {
+      member,
+      rank: 1,
+      missionsOk: st.missionsOk,
+      missionsKo: st.missionsKo,
+      missionsTotal,
+      heistsOk: st.heistsOk,
+      smallOpsOk: st.smallOpsOk,
+      estimatedRevenue: st.estimatedRevenue,
+      weaponsHeldCount: wp.count,
+      weaponsHeldValue: wp.value,
+      autoPoints,
+      bonusPoints,
+      totalPoints,
+      levelTitle: levelObj.title,
+      autoBadges,
+      manualBadges,
+      unlockedBadges: Array.from(new Set<DistinctionKey>([...autoBadges, ...manualBadges])),
+      note,
+    };
+  });
+
+  preliminary.sort(
+    (a, b) =>
+      b.totalPoints - a.totalPoints ||
+      b.missionsOk - a.missionsOk ||
+      b.heistsOk - a.heistsOk ||
+      b.estimatedRevenue - a.estimatedRevenue ||
+      (a.member.order || 0) - (b.member.order || 0) ||
+      a.member.name.localeCompare(b.member.name, 'fr-FR')
+  );
+
+  return preliminary.map((entry, idx) => {
+    const rank = idx + 1;
+    let unlocked = entry.unlockedBadges;
+    let auto = entry.autoBadges;
+    if (rank === 1 && entry.totalPoints > 0 && !auto.includes('legende')) {
+      auto = [...auto, 'legende'];
+      unlocked = Array.from(new Set<DistinctionKey>([...auto, ...entry.manualBadges]));
+    }
+    return {
+      ...entry,
+      rank,
+      autoBadges: auto,
+      unlockedBadges: unlocked,
+    };
+  });
+}
+
 export function buildDiscordReport(params: {
   missionStates: MissionStates;
+  scheduleMeta?: MissionScheduleMeta;
   treasuryMoney: TreasuryMoney;
   rewardStocks: RewardStocks;
   inventoryStock?: InventoryStock;
+  inventoryPrices?: InventoryPrices;
   weaponsStock?: WeaponsStock;
   weaponsLossAmount: number;
   hierMembers?: HierarchyMember[];
 }): string {
   const {
     missionStates,
+    scheduleMeta,
     treasuryMoney,
     rewardStocks,
     inventoryStock = {},
+    inventoryPrices,
     weaponsStock = {},
     weaponsLossAmount,
     hierMembers = [],
   } = params;
+  const effectiveScheduleDays = getEffectiveSchedule(missionStates, scheduleMeta).days;
   let discordText = '```asciidoc\n';
   discordText += '= BILAN COMPTABLE & TRÉSORERIE LOS CERBEROS =\n';
   discordText += `Semaine ${weekRangeText(missionStates)}\n\n`;
@@ -224,11 +591,12 @@ export function buildDiscordReport(params: {
     }
   });
 
-  const inventoryValTotal = calcInventoryTotalValue(inventoryStock);
+  const inventoryValTotal = calcInventoryTotalValue(inventoryStock, inventoryPrices);
   INVENTORY_ITEMS.forEach((i) => {
     const qty = Math.max(0, Number(inventoryStock[i.key]) || 0);
     if (qty > 0) {
-      discordText += `- [Stock] ${i.name} (${qty}x) : ${formatMoney(qty * i.price)}\n`;
+      const price = getInventoryItemPrice(i.key, inventoryPrices);
+      discordText += `- [Stock] ${i.name} (${qty}x) : ${formatMoney(qty * price)}\n`;
     }
   });
 
@@ -247,7 +615,13 @@ export function buildDiscordReport(params: {
   discordText += `Valeur Inventaire (Stock) : ${formatMoney(inventoryValTotal)}\n`;
   discordText += `Valeur Arsenal (Armes)    : ${formatMoney(weaponsValTotal)}\n`;
   discordText += `PATRIMOINE GLOBAL CARTEL  : ${formatMoney(
-    calcTotalWealth({ treasuryMoney, rewardStocks, inventoryStock, weaponsStock })
+    calcTotalWealth({
+      treasuryMoney,
+      rewardStocks,
+      inventoryStock,
+      inventoryPrices,
+      weaponsStock,
+    })
   )}\n`;
   discordText += `---------------------------------------------\n`;
 
@@ -257,14 +631,14 @@ export function buildDiscordReport(params: {
   let totalOk = 0;
   let totalKo = 0;
 
-  WEEKLY_SCHEDULE.forEach((day) => {
+  effectiveScheduleDays.forEach((day) => {
     let ok = 0;
     let ko = 0;
     let cost = 0;
     let extra = 0;
     let gains = 0;
     day.missions.forEach((m) => {
-      const f = missionFin(m, missionStates);
+      const f = missionFin(m, missionStates, inventoryPrices);
       if (f.success) ok++;
       if (f.fail) ko++;
       cost += f.cost;
@@ -282,7 +656,7 @@ export function buildDiscordReport(params: {
   const playerStats = new Map<string, { ok: number; ko: number }>();
   WEEKLY_SCHEDULE.forEach((day) => {
     day.missions.forEach((m) => {
-      const f = missionFin(m, missionStates);
+      const f = missionFin(m, missionStates, inventoryPrices);
       if (!f.done) return;
       const entry = getMissionEntry(missionStates, m.id);
       const players = Array.isArray(entry.players) ? entry.players : [];

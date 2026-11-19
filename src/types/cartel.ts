@@ -7,6 +7,7 @@ export type GearKey =
   | 'mai'
   | 'veh'
   | 'frg'
+  | 'drg'
   | 'fle'
   | 'bij'
   | 'pal'
@@ -55,6 +56,41 @@ export interface MissionStateEntry {
   lostWeapons?: LostWeaponRecord[];
 }
 
+export type MissionTypeKey =
+  | 'sup'
+  | 'atm'
+  | 'mai'
+  | 'frg'
+  | 'drg'
+  | 'ket'
+  | 'trn'
+  | 'yac'
+  | 'bob'
+  | 'fle'
+  | 'pal'
+  | 'pac'
+  | 'bij'
+  | 'fbi'
+  | 'amu'
+  | 'uni';
+
+export interface MissionRegulationRule {
+  typeKey: MissionTypeKey;
+  label: string;
+  criminals: string;
+  dailyLimit: number | null;
+  weeklyLimit: number;
+  waitMinutes: number;
+  major: boolean;
+}
+
+export interface MissionScheduleMeta {
+  scheduleOverrides: Record<string, string>;
+  unplacedMissionIds: string[];
+  lastRecalcDate: string;
+  lastRecalcAt: string;
+}
+
 export interface MissionStates {
   __week?: string;
   [missionId: string]: MissionStateEntry | string | undefined;
@@ -79,6 +115,7 @@ export interface InventoryItem {
 }
 
 export type InventoryStock = Record<string, number>;
+export type InventoryPrices = Record<string, number>;
 
 export interface WeaponEntry {
   id: string;
@@ -133,4 +170,26 @@ export interface HierarchyTier {
   flat?: boolean;
 }
 
-export type TabKey = 'planning' | 'inventory' | 'treasury' | 'accounting' | 'hierarchy';
+export type DistinctionKey =
+  | 'sang_fidele'
+  | 'frere_armes'
+  | 'loup_solitaire'
+  | 'stratege'
+  | 'homme_confiance'
+  | 'legende';
+
+export interface MemberRankingAdjustment {
+  bonusPoints: number;
+  note?: string;
+  manualBadges?: DistinctionKey[];
+}
+
+export type MemberRankingsMap = Record<string, MemberRankingAdjustment>;
+
+export type TabKey =
+  | 'planning'
+  | 'inventory'
+  | 'treasury'
+  | 'accounting'
+  | 'ranking'
+  | 'hierarchy';
