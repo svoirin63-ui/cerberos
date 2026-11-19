@@ -68,6 +68,7 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
 }) => {
   const [activeFilter, setActiveFilter] = useState<string>('ALL');
   const [showRegulation, setShowRegulation] = useState<boolean>(false);
+  const [showUnplaced, setShowUnplaced] = useState<boolean>(false);
   const [openDays, setOpenDays] = useState<Set<string>>(() => {
     const today = DAY_NAMES.find((d) => isTodayName(d, missionStates));
     return new Set(today ? [today] : []);
@@ -411,77 +412,69 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
   };
 
   return (
-    <div className="space-y-6">
-      {/* BANDEAU RECALCUL AUTOMATIQUE 09H30 & RÈGLEMENT */}
-      <div className="bg-charcoal/90 gold-border rounded-2xl p-4 shadow-xl space-y-3">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
-          <div className="flex items-start sm:items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-obsidian border border-gold/40 flex items-center justify-center text-gold shrink-0">
-              <Clock className="w-5 h-5" />
-            </div>
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="font-display text-sm font-bold text-white tracking-wide">
-                  Recalcul Automatique à 09h30
-                </h3>
-                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-gold/15 text-gold-light border border-gold/35">
-                  Quotidien · Conforme au règlement
-                </span>
-                {effectiveSchedule.movedCount > 0 && (
-                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/35 tabular-nums">
-                    🔄 {effectiveSchedule.movedCount} reportée{effectiveSchedule.movedCount > 1 ? 's' : ''}
-                  </span>
-                )}
-                {effectiveSchedule.unplacedMissions.length > 0 && (
-                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-red-500/15 text-red-300 border border-red-500/35 tabular-nums">
-                    ⚠️ {effectiveSchedule.unplacedMissions.length} hors quota
-                  </span>
-                )}
-              </div>
-              <p className="text-xs text-zinc-400">
-                Chaque jour à <strong className="text-zinc-200">09h30</strong>, les missions non réalisées des jours précédents sont réparties sur le reste de la semaine sans dépasser les limites journalières et hebdomadaires.{' '}
-                {formattedLastRecalc ? (
-                  <span className="text-gold-light/90 font-medium">
-                    Dernier calcul : {formattedLastRecalc}
-                  </span>
-                ) : (
-                  <span className="text-zinc-500">Aucun recalcul actif cette semaine.</span>
-                )}
-              </p>
-            </div>
+    <div className="space-y-4">
+      {/* BARRE COMPACTE RECALCUL 09H30 & RÈGLEMENT */}
+      <div className="bg-charcoal/75 border border-bronze/40 rounded-xl px-3.5 py-2 text-xs space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2 text-zinc-300">
+            <span className="inline-flex items-center gap-1.5 font-semibold text-gold-light">
+              <Clock className="w-3.5 h-3.5 text-gold" />
+              Recalcul auto 09h30
+            </span>
+            {formattedLastRecalc && (
+              <span className="text-[11px] text-zinc-500">
+                (dernier : {formattedLastRecalc})
+              </span>
+            )}
+            {effectiveSchedule.movedCount > 0 && (
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/35 tabular-nums">
+                🔄 {effectiveSchedule.movedCount} reportée{effectiveSchedule.movedCount > 1 ? 's' : ''}
+              </span>
+            )}
+            {effectiveSchedule.unplacedMissions.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowUnplaced((v) => !v)}
+                className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/35 tabular-nums transition cursor-pointer inline-flex items-center gap-1"
+              >
+                <AlertTriangle className="w-3 h-3" />
+                {effectiveSchedule.unplacedMissions.length} hors quota {showUnplaced ? '▴' : '▾'}
+              </button>
+            )}
           </div>
 
-          <div className="flex items-center gap-2 flex-wrap shrink-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <button
               type="button"
               onClick={() => setShowRegulation((v) => !v)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition flex items-center gap-1.5 cursor-pointer ${
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition flex items-center gap-1 cursor-pointer ${
                 showRegulation
                   ? 'bg-gold text-obsidian border-gold'
-                  : 'bg-obsidian/80 hover:bg-obsidian text-zinc-200 border-bronze/50 hover:border-gold/60'
+                  : 'bg-obsidian/70 hover:bg-obsidian text-zinc-300 border-bronze/40 hover:border-gold/50'
               }`}
             >
-              <ScrollText className="w-3.5 h-3.5" />
-              {showRegulation ? 'Masquer le règlement' : 'Voir le règlement'}
+              <ScrollText className="w-3 h-3" />
+              Règlement
             </button>
             {!readonly && (
               <>
                 <button
                   type="button"
                   onClick={onRecalculateSchedule}
-                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-gold hover:bg-gold-light text-obsidian transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+                  title="Répartir les missions en retard sur le reste de la semaine selon le règlement"
+                  className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-gold/90 hover:bg-gold text-obsidian transition flex items-center gap-1 cursor-pointer"
                 >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  Recalculer maintenant
+                  <RefreshCw className="w-3 h-3" />
+                  Recalculer
                 </button>
                 {hasScheduleAdjustments && (
                   <button
                     type="button"
                     onClick={onResetScheduleOverrides}
-                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 transition flex items-center gap-1.5 cursor-pointer"
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 transition flex items-center gap-1 cursor-pointer"
                   >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    Planning d&apos;origine
+                    <RotateCcw className="w-3 h-3" />
+                    Origine
                   </button>
                 )}
               </>
@@ -490,7 +483,7 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
         </div>
 
         {showRegulation && (
-          <div className="pt-3 border-t border-bronze/35 space-y-3">
+          <div className="pt-2.5 border-t border-bronze/35 space-y-2.5">
             <div className="overflow-x-auto rounded-xl border border-bronze/40 bg-obsidian/75">
               <table className="w-full text-left text-xs">
                 <thead className="bg-charcoal/90 text-[10px] uppercase tracking-wider text-gold-light border-b border-bronze/40">
@@ -527,50 +520,46 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                 </tbody>
               </table>
             </div>
-            <div className="rounded-xl bg-amber-500/10 border border-amber-500/35 px-3.5 py-2 text-xs text-amber-200 font-medium">
+            <div className="rounded-xl bg-amber-500/10 border border-amber-500/35 px-3 py-2 text-xs text-amber-200 font-medium">
               ⚖️ {REGULATION_FAIRPLAY_NOTE}
             </div>
           </div>
         )}
-      </div>
 
-      {effectiveSchedule.unplacedMissions.length > 0 && (
-        <div className="bg-red-950/25 border border-crimson-light/45 rounded-2xl p-4 space-y-2.5">
-          <div className="flex items-center gap-2 text-red-200 font-display text-sm font-bold">
-            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-            Missions en retard non replaçables ({effectiveSchedule.unplacedMissions.length}) — Règlement journalier déjà saturé
-          </div>
-          <p className="text-xs text-zinc-300">
-            Ces missions n&apos;ont pas été réalisées à temps et ne peuvent pas être reportées sur les jours restants sans dépasser la limite par jour du règlement :
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-            {effectiveSchedule.unplacedMissions.map(({ mission, originalDay, reason }) => (
-              <div
-                key={mission.id}
-                className="rounded-xl bg-obsidian/80 border border-red-500/30 px-3 py-2 flex items-center justify-between gap-2"
-              >
-                <div className="min-w-0">
-                  <p className="text-xs font-semibold text-zinc-100 truncate">
-                    {mission.name}{' '}
-                    <span className="text-zinc-400 font-normal">({originalDay})</span>
-                  </p>
-                  <p className="text-[10px] text-amber-300/90 truncate">{reason}</p>
+        {showUnplaced && effectiveSchedule.unplacedMissions.length > 0 && (
+          <div className="pt-2.5 border-t border-crimson-light/30 space-y-2">
+            <p className="text-[11px] text-zinc-300">
+              Missions en retard non replaçables sans dépasser la limite journalière du règlement :
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {effectiveSchedule.unplacedMissions.map(({ mission, originalDay, reason }) => (
+                <div
+                  key={mission.id}
+                  className="rounded-lg bg-obsidian/80 border border-red-500/30 px-3 py-2 flex items-center justify-between gap-2"
+                >
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-zinc-100 truncate">
+                      {mission.name}{' '}
+                      <span className="text-zinc-400 font-normal">({originalDay})</span>
+                    </p>
+                    <p className="text-[10px] text-amber-300/90 truncate">{reason}</p>
+                  </div>
+                  {!readonly && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenMissionValidation(mission, originalDay, 'success')}
+                      title="Valider rétroactivement si effectuée"
+                      className="px-2 py-1 rounded-lg text-[10px] font-bold bg-zinc-900 hover:bg-zinc-800 text-gold-light border border-gold/40 shrink-0 cursor-pointer"
+                    >
+                      Valider
+                    </button>
+                  )}
                 </div>
-                {!readonly && (
-                  <button
-                    type="button"
-                    onClick={() => onOpenMissionValidation(mission, originalDay, 'success')}
-                    title="Valider rétroactivement si effectuée"
-                    className="px-2 py-1 rounded-lg text-[10px] font-bold bg-zinc-900 hover:bg-zinc-800 text-gold-light border border-gold/40 shrink-0 cursor-pointer"
-                  >
-                    Valider
-                  </button>
-                )}
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1 w-full sm:w-auto">
