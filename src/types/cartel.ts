@@ -246,7 +246,34 @@ export interface CatalogGroup {
 
 export type CatalogGroupsMap = Record<string, CatalogGroup>;
 
+export type AlbumPhotoCategory =
+  | 'heists'
+  | 'police'
+  | 'hq'
+  | 'identity'
+  | 'members';
+
+export interface AlbumPhotoRecord {
+  id: string;
+  title: string;
+  category: AlbumPhotoCategory;
+  caption: string;
+  location: string;
+  dateLabel: string;
+  authorName: string;
+  createdAtIso: string;
+  mediaId?: string;
+  externalUrl?: string;
+  builtIn?: boolean;
+}
+
+export interface AlbumState {
+  photos: Record<string, AlbumPhotoRecord>;
+  favorites: string[];
+}
+
 export type TabKey =
+  | 'home'
   | 'planning'
   | 'inventory'
   | 'orders'
@@ -254,4 +281,5 @@ export type TabKey =
   | 'treasury'
   | 'accounting'
   | 'ranking'
-  | 'hierarchy';
+  | 'hierarchy'
+  | 'album';

@@ -235,6 +235,70 @@
         }
       },
       "required": ["groups", "updatedAt", "updatedBy"]
+    },
+    "AlbumState": {
+      "title": "AlbumState",
+      "description": "Shared cartel photo album metadata index and favorite photo IDs",
+      "type": "object",
+      "properties": {
+        "photos": {
+          "type": "object",
+          "description": "Bounded map (up to 100 entries) of custom photo metadata records"
+        },
+        "favorites": {
+          "type": "array",
+          "description": "Bounded list (up to 150) of favorited photo IDs across built-in and custom photos"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        }
+      },
+      "required": ["photos", "favorites", "updatedAt", "updatedBy"]
+    },
+    "AlbumMedia": {
+      "title": "AlbumMedia",
+      "description": "Individual uploaded cartel photo payload document (isolated per photo to stay under 1MB)",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "imageUrl": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 700000
+        },
+        "mimeType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "imageUrl", "mimeType", "createdBy", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -269,6 +333,14 @@
     "/cartels/{cartelId}/state/catalog": {
       "schema": { "$ref": "#/entities/CatalogState" },
       "description": "Live catalog of external groups, contacts, and buy/sell prices"
+    },
+    "/cartels/{cartelId}/state/album": {
+      "schema": { "$ref": "#/entities/AlbumState" },
+      "description": "Shared cartel photo album metadata index and favorited photo IDs"
+    },
+    "/cartels/{cartelId}/albumMedia/{photoId}": {
+      "schema": { "$ref": "#/entities/AlbumMedia" },
+      "description": "Individual uploaded cartel photo payload referenced by state/album"
     }
   }
 }

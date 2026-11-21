@@ -4,7 +4,9 @@ import {
   BarChart3,
   BookOpen,
   Calendar,
+  Camera,
   ClipboardCopy,
+  LayoutDashboard,
   Lock,
   LogIn,
   LogOut,
@@ -16,8 +18,10 @@ import {
   Wallet,
 } from 'lucide-react';
 import { AccountingView } from '@/src/components/AccountingView';
+import { AlbumView } from '@/src/components/AlbumView';
 import { AuthModal } from '@/src/components/AuthModal';
 import { CatalogView } from '@/src/components/CatalogView';
+import { DashboardHomeView } from '@/src/components/DashboardHomeView';
 import { HierarchyView } from '@/src/components/HierarchyView';
 import { InventoryView } from '@/src/components/InventoryView';
 import {
@@ -44,10 +48,14 @@ import { getStockKeyDisplayName } from '@/src/data/eminenceMissions';
 import { auth, googleProvider } from '@/src/firebase';
 import {
   bootstrapAndJoinCartel,
+  DEFAULT_ALBUM_STATE,
+  deleteAlbumPhotoWithMedia,
   type LocalSeedData,
   lockEditorRole,
   type MemberRole,
   resetAllInventory,
+  saveAlbumPhotoWithMedia,
+  saveAlbumState,
   saveAllMissionEntries,
   saveAllMissionEntriesWithSideEffects,
   saveCatalogGroups,
@@ -72,6 +80,8 @@ import {
   updateCartelSecretCode,
 } from '@/src/services/cartelFirestore';
 import type {
+  AlbumPhotoRecord,
+  AlbumState,
   CatalogGroup,
   CatalogGroupsMap,
   GearKey,
@@ -284,10 +294,11 @@ export default function App() {
   const [hierMembers, setHierMembers] = useState<HierarchyMember[]>(HIER_DEFAULTS);
   const [memberRankings, setMemberRankings] = useState<MemberRankingsMap>({});
   const [catalogGroups, setCatalogGroups] = useState<CatalogGroupsMap>(DEFAULT_CATALOG_GROUPS);
+  const [albumState, setAlbumState] = useState<AlbumState>(DEFAULT_ALBUM_STATE);
   const [selectedCatalogGroupId, setSelectedCatalogGroupId] = useState<string>('marabunta');
   const [groupOrderCarts, setGroupOrderCarts] = useState<Record<string, Record<string, number>>>({});
 
-  const [currentTab, setCurrentTab] = useState<TabKey>('planning');
+  const [currentTab, setCurrentTab] = useState<TabKey>('home');
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [resetModalOpen, setResetModalOpen] = useState(false);
   const [validatingMission, setValidatingMission] = useState<{
@@ -391,6 +402,7 @@ export default function App() {
           onHierarchy: (members) => setHierMembers(members),
           onMemberRankings: (rankings) => setMemberRankings(rankings),
           onCatalog: (groups) => setCatalogGroups(groups),
+          onAlbum: (album) => setAlbumState(album),
           onRole: (role) => setMemberRole(role),
           onError: (err) => setSyncError(err),
         });
@@ -2071,6 +2083,79 @@ export default function App() {
     );
   };
 
+  const handleAddAlbumPhoto = async (
+    photo: AlbumPhotoRecord,
+    media?: { imageUrl: string; mimeType: string }
+  ) => {
+    if (readonly || !authUser) return;
+    const nextState: AlbumState = {
+      photos: {
+        ...albumState.photos,
+        [photo.id]: photo,
+      },
+      favorites: albumState.favorites,
+    };
+    setAlbumState(nextState);
+    try {
+      await saveAlbumPhotoWithMedia(authUser.uid, photo, nextState, media);
+      showToast(`Photo "${photo.title}" ajoutée à l'album !`);
+    } catch (err) {
+      setSyncError(err instanceof Error ? err : new Error(String(err)));
+      throw err;
+    }
+  };
+
+  const handleUpdateAlbumPhotoMeta = async (photo: AlbumPhotoRecord) => {
+    if (readonly || !authUser) return;
+    const nextState: AlbumState = {
+      photos: {
+        ...albumState.photos,
+        [photo.id]: photo,
+      },
+      favorites: albumState.favorites,
+    };
+    setAlbumState(nextState);
+    try {
+      await saveAlbumState(authUser.uid, nextState);
+      showToast('Informations de la photo mises à jour.');
+    } catch (err) {
+      setSyncError(err instanceof Error ? err : new Error(String(err)));
+    }
+  };
+
+  const handleDeleteAlbumPhoto = async (photo: AlbumPhotoRecord) => {
+    if (readonly || !authUser) return;
+    const nextPhotos = { ...albumState.photos };
+    delete nextPhotos[photo.id];
+    const nextState: AlbumState = {
+      photos: nextPhotos,
+      favorites: albumState.favorites.filter((fid) => fid !== photo.id),
+    };
+    setAlbumState(nextState);
+    try {
+      await deleteAlbumPhotoWithMedia(authUser.uid, photo, nextState);
+      showToast('Photo supprimée de l’album.');
+    } catch (err) {
+      setSyncError(err instanceof Error ? err : new Error(String(err)));
+    }
+  };
+
+  const handleToggleAlbumFavorite = (photoId: string) => {
+    if (readonly || !authUser) return;
+    const exists = albumState.favorites.includes(photoId);
+    const nextFavorites = exists
+      ? albumState.favorites.filter((fid) => fid !== photoId)
+      : [...albumState.favorites, photoId];
+    const nextState: AlbumState = {
+      photos: albumState.photos,
+      favorites: nextFavorites,
+    };
+    setAlbumState(nextState);
+    void saveAlbumState(authUser.uid, nextState).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+  };
+
   const handleVerifySecretCode = async (code: string): Promise<boolean> => {
     if (!authUser) return false;
     try {
@@ -2337,6 +2422,14 @@ export default function App() {
             <div className="flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
+                onClick={() => setCurrentTab('home')}
+                className={tabBtnClass('home')}
+              >
+                <LayoutDashboard className="w-3.5 h-3.5" />
+                Accueil
+              </button>
+              <button
+                type="button"
                 onClick={() => setCurrentTab('planning')}
                 className={tabBtnClass('planning')}
               >
@@ -2398,6 +2491,14 @@ export default function App() {
               >
                 <Users className="w-3.5 h-3.5" />
                 Hiérarchie
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentTab('album')}
+                className={tabBtnClass('album')}
+              >
+                <Camera className="w-3.5 h-3.5" />
+                Album
               </button>
               <button
                 type="button"
@@ -2555,6 +2656,27 @@ export default function App() {
           </div>
         )}
 
+        {currentTab === 'home' && (
+          <DashboardHomeView
+            missionStates={missionStates}
+            scheduleMeta={scheduleMeta}
+            inventoryStock={inventoryStock}
+            inventoryPrices={inventoryPrices}
+            weaponsStock={weaponsStock}
+            rewardStocks={rewardStocks}
+            treasuryMoney={treasuryMoney}
+            catalogGroups={catalogGroups}
+            members={hierMembers}
+            memberRankings={memberRankings}
+            kpis={kpis}
+            readonly={readonly}
+            onNavigateTab={setCurrentTab}
+            onOpenMissionValidation={handleOpenMissionValidation}
+            onOpenCatalog={handleOpenCatalog}
+            onGoToOrdersWithGroup={handleGoToOrdersWithGroup}
+          />
+        )}
+
         {currentTab === 'planning' && (
           <PlanningView
             missionStates={missionStates}
@@ -2692,6 +2814,20 @@ export default function App() {
             readonly={readonly}
             onSaveMember={handleSaveHierarchyMember}
             onDeleteMember={handleDeleteHierarchyMember}
+            onShowToast={showToast}
+          />
+        )}
+
+        {currentTab === 'album' && (
+          <AlbumView
+            albumState={albumState}
+            defaultAuthorName={authUser.displayName || authUser.email?.split('@')[0] || 'Los Cerberos'}
+            readonly={readonly}
+            onAddPhoto={handleAddAlbumPhoto}
+            onUpdatePhotoMeta={handleUpdateAlbumPhotoMeta}
+            onDeletePhoto={handleDeleteAlbumPhoto}
+            onToggleFavorite={handleToggleAlbumFavorite}
+            onRequestUnlock={() => setAuthModalOpen(true)}
             onShowToast={showToast}
           />
         )}

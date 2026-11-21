@@ -148,12 +148,34 @@ service cloud.firestore {
         isValidId(data.updatedBy);
     }
 
+    function isValidAlbumState(data) {
+      return data.keys().hasAll(['photos', 'favorites', 'updatedAt', 'updatedBy']) &&
+        data.keys().hasOnly(['photos', 'favorites', 'updatedAt', 'updatedBy']) &&
+        data.photos is map && data.photos.size() <= 100 &&
+        data.favorites is list && data.favorites.size() <= 150 &&
+        (data.favorites.size() == 0 || (data.favorites[0] is string && data.favorites[0].size() <= 64)) &&
+        data.updatedAt is timestamp &&
+        isValidId(data.updatedBy);
+    }
+
+    function isValidAlbumMedia(data) {
+      return data.keys().hasAll(['id', 'imageUrl', 'mimeType', 'createdBy', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'imageUrl', 'mimeType', 'createdBy', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.imageUrl is string && data.imageUrl.size() >= 1 && data.imageUrl.size() <= 700000 &&
+        data.mimeType is string && data.mimeType.size() >= 1 && data.mimeType.size() <= 40 &&
+        isValidId(data.createdBy) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
     function isValidStateDoc(stateId, data) {
       return (stateId == 'missions' && isValidMissionsState(data)) ||
         (stateId == 'inventory' && isValidInventoryState(data)) ||
         (stateId == 'treasury' && isValidTreasuryState(data)) ||
         (stateId == 'hierarchy' && isValidHierarchyState(data)) ||
-        (stateId == 'catalog' && isValidCatalogState(data));
+        (stateId == 'catalog' && isValidCatalogState(data)) ||
+        (stateId == 'album' && isValidAlbumState(data));
     }
 
     function isValidStateUpdate(stateId, next, prev) {
@@ -170,7 +192,8 @@ service cloud.firestore {
         (stateId == 'inventory' && next.diff(prev).affectedKeys().hasOnly(['stock', 'prices', 'weapons', 'updatedAt', 'updatedBy'])) ||
         (stateId == 'treasury' && next.diff(prev).affectedKeys().hasOnly(['legal', 'illegal', 'rewards', 'weaponsLossAmount', 'updatedAt', 'updatedBy'])) ||
         (stateId == 'hierarchy' && next.diff(prev).affectedKeys().hasOnly(['members', 'rankings', 'updatedAt', 'updatedBy'])) ||
-        (stateId == 'catalog' && next.diff(prev).affectedKeys().hasOnly(['groups', 'updatedAt', 'updatedBy']));
+        (stateId == 'catalog' && next.diff(prev).affectedKeys().hasOnly(['groups', 'updatedAt', 'updatedBy'])) ||
+        (stateId == 'album' && next.diff(prev).affectedKeys().hasOnly(['photos', 'favorites', 'updatedAt', 'updatedBy']));
     }
 
     match /admins/{uid} {
@@ -253,12 +276,12 @@ service cloud.firestore {
       match /state/{stateId} {
         allow get: if isValidId(cartelId) &&
           isValidId(stateId) &&
-          stateId in ['missions', 'inventory', 'treasury', 'hierarchy', 'catalog'] &&
+          stateId in ['missions', 'inventory', 'treasury', 'hierarchy', 'catalog', 'album'] &&
           (isAdmin() || isCartelMember(cartelId));
         allow list: if false;
         allow create: if isValidId(cartelId) &&
           isValidId(stateId) &&
-          stateId in ['missions', 'inventory', 'treasury', 'hierarchy', 'catalog'] &&
+          stateId in ['missions', 'inventory', 'treasury', 'hierarchy', 'catalog', 'album'] &&
           isCartelEditor(cartelId) &&
           isValidStateDoc(stateId, incoming()) &&
           incoming().updatedBy == request.auth.uid &&
@@ -266,13 +289,33 @@ service cloud.firestore {
           exists(/databases/$(database)/documents/cartels/$(cartelId));
         allow update: if isValidId(cartelId) &&
           isValidId(stateId) &&
-          stateId in ['missions', 'inventory', 'treasury', 'hierarchy', 'catalog'] &&
+          stateId in ['missions', 'inventory', 'treasury', 'hierarchy', 'catalog', 'album'] &&
           isCartelEditor(cartelId) &&
           isValidStateDoc(stateId, incoming()) &&
           incoming().updatedBy == request.auth.uid &&
           incoming().updatedAt == request.time &&
           isValidStateUpdate(stateId, incoming(), existing());
         allow delete: if false;
+      }
+
+      match /albumMedia/{photoId} {
+        allow get: if isValidId(cartelId) &&
+          isValidId(photoId) &&
+          (isAdmin() || isCartelMember(cartelId));
+        allow list: if false;
+        allow create: if isValidId(cartelId) &&
+          isValidId(photoId) &&
+          isCartelEditor(cartelId) &&
+          isValidAlbumMedia(incoming()) &&
+          incoming().id == photoId &&
+          incoming().createdBy == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/cartels/$(cartelId));
+        allow update: if false;
+        allow delete: if isValidId(cartelId) &&
+          isValidId(photoId) &&
+          isCartelEditor(cartelId);
       }
     }
   }

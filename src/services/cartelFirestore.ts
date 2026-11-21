@@ -1,5 +1,6 @@
 import type { User } from 'firebase/auth';
 import {
+  deleteDoc,
   doc,
   getDoc,
   onSnapshot,
@@ -24,6 +25,9 @@ import {
   OperationType,
 } from '@/src/firebase';
 import type {
+  AlbumPhotoCategory,
+  AlbumPhotoRecord,
+  AlbumState,
   CatalogContact,
   CatalogGroup,
   CatalogGroupColor,
@@ -386,6 +390,93 @@ export function sanitizeCatalogGroups(raw: unknown): CatalogGroupsMap {
   return clean;
 }
 
+export const DEFAULT_ALBUM_STATE: AlbumState = {
+  photos: {},
+  favorites: [],
+};
+
+const VALID_ALBUM_CATEGORIES = new Set<AlbumPhotoCategory>([
+  'heists',
+  'police',
+  'hq',
+  'identity',
+  'members',
+]);
+
+export function sanitizeAlbumState(raw: unknown): AlbumState {
+  if (!raw || typeof raw !== 'object') {
+    return { photos: {}, favorites: [] };
+  }
+  const obj = raw as { photos?: unknown; favorites?: unknown };
+  const photos: Record<string, AlbumPhotoRecord> = {};
+
+  if (obj.photos && typeof obj.photos === 'object') {
+    Object.entries(obj.photos as Record<string, AlbumPhotoRecord>)
+      .slice(0, 100)
+      .forEach(([key, entry]) => {
+        if (!entry || typeof entry !== 'object') return;
+        const rawId = typeof entry.id === 'string' && entry.id.trim() ? entry.id : key;
+        const id = rawId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+        const title =
+          typeof entry.title === 'string' ? entry.title.trim().slice(0, 90) : '';
+        if (!id || !title) return;
+
+        const category: AlbumPhotoCategory = VALID_ALBUM_CATEGORIES.has(entry.category)
+          ? entry.category
+          : 'members';
+        const caption =
+          typeof entry.caption === 'string' ? entry.caption.trim().slice(0, 260) : '';
+        const location =
+          typeof entry.location === 'string' ? entry.location.trim().slice(0, 80) : '';
+        const dateLabel =
+          typeof entry.dateLabel === 'string' ? entry.dateLabel.trim().slice(0, 40) : '';
+        const authorName =
+          typeof entry.authorName === 'string'
+            ? entry.authorName.trim().slice(0, 60)
+            : 'Los Cerberos';
+        const createdAtIso =
+          typeof entry.createdAtIso === 'string' && entry.createdAtIso.trim()
+            ? entry.createdAtIso.trim().slice(0, 40)
+            : new Date().toISOString();
+
+        const record: AlbumPhotoRecord = {
+          id,
+          title,
+          category,
+          caption,
+          location,
+          dateLabel,
+          authorName,
+          createdAtIso,
+        };
+
+        if (typeof entry.mediaId === 'string' && entry.mediaId.trim()) {
+          record.mediaId = entry.mediaId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+        }
+        if (typeof entry.externalUrl === 'string' && entry.externalUrl.trim()) {
+          record.externalUrl = entry.externalUrl.trim().slice(0, 500);
+        }
+
+        if (record.mediaId || record.externalUrl) {
+          photos[id] = record;
+        }
+      });
+  }
+
+  const favorites = Array.isArray(obj.favorites)
+    ? Array.from(
+        new Set(
+          obj.favorites
+            .filter((f): f is string => typeof f === 'string')
+            .map((f) => f.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64))
+            .filter(Boolean)
+        )
+      ).slice(0, 150)
+    : [];
+
+  return { photos, favorites };
+}
+
 export async function bootstrapAndJoinCartel(
   user: User,
   seed: LocalSeedData
@@ -541,6 +632,26 @@ export async function bootstrapAndJoinCartel(
         handleFirestoreError(error, OperationType.CREATE, `cartels/${CARTEL_ID}/state/catalog`);
       }
     }
+
+    const albumRef = doc(db, 'cartels', CARTEL_ID, 'state', 'album');
+    let albumSnap;
+    try {
+      albumSnap = await getDoc(albumRef);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, `cartels/${CARTEL_ID}/state/album`);
+    }
+    if (!albumSnap.exists()) {
+      try {
+        await setDoc(albumRef, {
+          photos: {},
+          favorites: [],
+          updatedAt: serverTimestamp(),
+          updatedBy: user.uid,
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `cartels/${CARTEL_ID}/state/album`);
+      }
+    }
   }
 
   let memberSnap;
@@ -588,6 +699,7 @@ export function subscribeCartelState(
     onHierarchy: (members: HierarchyMember[]) => void;
     onMemberRankings?: (rankings: MemberRankingsMap) => void;
     onCatalog?: (groups: CatalogGroupsMap) => void;
+    onAlbum?: (album: AlbumState) => void;
     onRole: (role: MemberRole) => void;
     onError: (err: Error) => void;
   }
@@ -722,6 +834,24 @@ export function subscribeCartelState(
     }
   );
 
+  const unsubAlbum = onSnapshot(
+    doc(db, 'cartels', CARTEL_ID, 'state', 'album'),
+    (snap) => {
+      if (!snap.exists()) {
+        callbacks.onAlbum?.(DEFAULT_ALBUM_STATE);
+        return;
+      }
+      callbacks.onAlbum?.(sanitizeAlbumState(snap.data()));
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.GET, `cartels/${CARTEL_ID}/state/album`);
+      } catch (err) {
+        callbacks.onError(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+  );
+
   return () => {
     unsubMissions();
     unsubInventory();
@@ -729,6 +859,7 @@ export function subscribeCartelState(
     unsubHierarchy();
     unsubMember();
     unsubCatalog();
+    unsubAlbum();
   };
 }
 
@@ -1289,6 +1420,108 @@ export async function saveCatalogGroups(
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function saveAlbumState(
+  uid: string,
+  albumState: AlbumState
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/state/album`;
+  const clean = sanitizeAlbumState(albumState);
+  try {
+    await setDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'album'), {
+      photos: clean.photos,
+      favorites: clean.favorites,
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function saveAlbumPhotoWithMedia(
+  uid: string,
+  photo: AlbumPhotoRecord,
+  nextAlbumState: AlbumState,
+  media?: { imageUrl: string; mimeType: string }
+): Promise<void> {
+  const cleanState = sanitizeAlbumState(nextAlbumState);
+  const albumPath = `cartels/${CARTEL_ID}/state/album`;
+  const mediaId = photo.mediaId?.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+
+  if (media && mediaId) {
+    const mediaPath = `cartels/${CARTEL_ID}/albumMedia/${mediaId}`;
+    try {
+      await setDoc(doc(db, 'cartels', CARTEL_ID, 'albumMedia', mediaId), {
+        id: mediaId,
+        imageUrl: media.imageUrl.slice(0, 700000),
+        mimeType: (media.mimeType || 'image/jpeg').slice(0, 40),
+        createdBy: uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, mediaPath);
+    }
+  }
+
+  try {
+    await setDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'album'), {
+      photos: cleanState.photos,
+      favorites: cleanState.favorites,
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, albumPath);
+  }
+}
+
+export async function deleteAlbumPhotoWithMedia(
+  uid: string,
+  photo: AlbumPhotoRecord,
+  nextAlbumState: AlbumState
+): Promise<void> {
+  const cleanState = sanitizeAlbumState(nextAlbumState);
+  const albumPath = `cartels/${CARTEL_ID}/state/album`;
+
+  try {
+    await setDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'album'), {
+      photos: cleanState.photos,
+      favorites: cleanState.favorites,
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, albumPath);
+  }
+
+  if (photo.mediaId) {
+    const mediaId = photo.mediaId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+    if (mediaId) {
+      const mediaPath = `cartels/${CARTEL_ID}/albumMedia/${mediaId}`;
+      try {
+        await deleteDoc(doc(db, 'cartels', CARTEL_ID, 'albumMedia', mediaId));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, mediaPath);
+      }
+    }
+  }
+}
+
+export async function fetchAlbumMediaUrl(mediaId: string): Promise<string | null> {
+  const cleanId = mediaId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+  if (!cleanId) return null;
+  const mediaPath = `cartels/${CARTEL_ID}/albumMedia/${cleanId}`;
+  try {
+    const snap = await getDoc(doc(db, 'cartels', CARTEL_ID, 'albumMedia', cleanId));
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    return typeof data.imageUrl === 'string' && data.imageUrl.trim() ? data.imageUrl : null;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, mediaPath);
   }
 }
 
