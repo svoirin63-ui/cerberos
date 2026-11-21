@@ -8,6 +8,21 @@ export type GearKey =
   | 'veh'
   | 'frg'
   | 'drg'
+  | 'gilet'
+  | 'mun_9mm'
+  | 'mun_45acp'
+  | 'mun_44mag'
+  | 'mun_50ae'
+  | 'mun_pistolet'
+  | 'mun_pm'
+  | 'mun_fusil'
+  | 'mun_pompe'
+  | 'mun_sniper'
+  | 'acc_chg_fusil'
+  | 'acc_chg_pompe'
+  | 'acc_lunette_macro'
+  | 'acc_poignee'
+  | 'acc_petite_lunette'
   | 'fle'
   | 'bij'
   | 'pal'
@@ -111,7 +126,7 @@ export interface InventoryItem {
   key: Exclude<GearKey, 'none' | 'amu' | 'fbi' | 'uni'>;
   name: string;
   price: number;
-  category: 'tool' | 'heist_pack';
+  category: 'tool' | 'heist_pack' | 'protection' | 'accessory';
 }
 
 export type InventoryStock = Record<string, number>;
@@ -137,6 +152,7 @@ export interface RewardItem {
   key: string;
   name: string;
   defaultVal: number;
+  buyerGroup?: 'receleur' | 'whiskey';
 }
 
 export interface RewardStockEntry {
@@ -186,9 +202,55 @@ export interface MemberRankingAdjustment {
 
 export type MemberRankingsMap = Record<string, MemberRankingAdjustment>;
 
+export type CatalogTradeType = 'sell' | 'buyback';
+
+export type CatalogItemCategory =
+  | 'munitions'
+  | 'accessoires'
+  | 'gilets'
+  | 'armes'
+  | 'reparation'
+  | 'materiel'
+  | 'butin'
+  | 'autre';
+
+export type CatalogGroupColor = 'blue' | 'gold' | 'crimson' | 'emerald' | 'purple';
+
+export interface CatalogContact {
+  id: string;
+  name: string;
+  role: string;
+  phone: string;
+  notes: string;
+}
+
+export interface CatalogItem {
+  id: string;
+  name: string;
+  tradeType: CatalogTradeType;
+  category: CatalogItemCategory;
+  price: number;
+  linkedGearKey?: GearKey | '';
+  notes: string;
+}
+
+export interface CatalogGroup {
+  id: string;
+  name: string;
+  specialty: string;
+  color: CatalogGroupColor;
+  notes: string;
+  contacts: CatalogContact[];
+  items: CatalogItem[];
+}
+
+export type CatalogGroupsMap = Record<string, CatalogGroup>;
+
 export type TabKey =
   | 'planning'
   | 'inventory'
+  | 'orders'
+  | 'catalog'
   | 'treasury'
   | 'accounting'
   | 'ranking'

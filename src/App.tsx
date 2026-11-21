@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
 import {
   BarChart3,
+  BookOpen,
   Calendar,
   ClipboardCopy,
   Lock,
@@ -9,24 +10,28 @@ import {
   LogOut,
   Package,
   RefreshCw,
+  ShoppingCart,
   Trophy,
   Users,
   Wallet,
 } from 'lucide-react';
 import { AccountingView } from '@/src/components/AccountingView';
 import { AuthModal } from '@/src/components/AuthModal';
+import { CatalogView } from '@/src/components/CatalogView';
 import { HierarchyView } from '@/src/components/HierarchyView';
 import { InventoryView } from '@/src/components/InventoryView';
 import {
   MissionValidationModal,
   type MissionValidationPayload,
 } from '@/src/components/MissionValidationModal';
+import { OrdersView } from '@/src/components/OrdersView';
 import { PlanningView } from '@/src/components/PlanningView';
 import { RankingView } from '@/src/components/RankingView';
 import { ResetModal } from '@/src/components/ResetModal';
 import { Toast, type ToastVariant } from '@/src/components/Toast';
 import { TreasuryView } from '@/src/components/TreasuryView';
 import {
+  DEFAULT_CATALOG_GROUPS,
   DEFAULT_SECRET_CODE,
   HIER_DEFAULTS,
   INVENTORY_ITEMS,
@@ -35,6 +40,7 @@ import {
   TOTAL_WEEKLY_MISSIONS,
   WEEKLY_SCHEDULE,
 } from '@/src/data/cartelData';
+import { getStockKeyDisplayName } from '@/src/data/eminenceMissions';
 import { auth, googleProvider } from '@/src/firebase';
 import {
   bootstrapAndJoinCartel,
@@ -44,10 +50,12 @@ import {
   resetAllInventory,
   saveAllMissionEntries,
   saveAllMissionEntriesWithSideEffects,
+  saveCatalogGroups,
   saveHierarchyMembers,
   saveInventoryItem,
   saveInventoryItemPrice,
   saveInventoryOrderReceipt,
+  saveLootSale,
   saveMemberRankings,
   saveMissionEntry,
   saveMissionWithSideEffects,
@@ -58,11 +66,15 @@ import {
   saveWeaponLossGlobal,
   saveWeaponsLoss,
   saveWeaponsStock,
+  saveWeaponsWithTreasury,
   subscribeCartelState,
   unlockEditorWithCode,
   updateCartelSecretCode,
 } from '@/src/services/cartelFirestore';
 import type {
+  CatalogGroup,
+  CatalogGroupsMap,
+  GearKey,
   HierarchyMember,
   HierarchyUnitKey,
   InventoryPrices,
@@ -86,6 +98,8 @@ import {
   calcTotalWealth,
   currentWeekStart,
   formatMoney,
+  getCatalogExtraInventoryItems,
+  getCatalogStockKey,
   getInventoryItemPrice,
   getMissionEntry,
   getStatus,
@@ -184,8 +198,25 @@ function buildValidationStockAlert(params: {
 
   keysToCheck.forEach((gKey) => {
     const item = INVENTORY_ITEMS.find((i) => i.key === gKey);
-    if (!item) return;
     const remaining = Math.max(0, Math.floor(Number(nextInventory[gKey]) || 0));
+
+    if (!item) {
+      if (gKey.startsWith('cat_em_') && debitedKeys.includes(gKey)) {
+        const label = getStockKeyDisplayName(gKey);
+        if (remaining === 0) {
+          alerts.push({
+            variant: 'critical',
+            text: `Stock épuisé : 0 ${label} restant`,
+          });
+        } else if (remaining === 1) {
+          alerts.push({
+            variant: 'warning',
+            text: `Plus que 1 ${label} en stock`,
+          });
+        }
+      }
+      return;
+    }
 
     if (item.category === 'heist_pack') {
       if (remaining === 0) {
@@ -200,7 +231,7 @@ function buildValidationStockAlert(params: {
       return;
     }
 
-    if (item.category === 'tool') {
+    if (item.category === 'tool' || item.category === 'protection') {
       if (remaining === 0) {
         alerts.push({
           variant: 'critical',
@@ -252,6 +283,9 @@ export default function App() {
   const [weaponsLossAmount, setWeaponsLossAmount] = useState<number>(0);
   const [hierMembers, setHierMembers] = useState<HierarchyMember[]>(HIER_DEFAULTS);
   const [memberRankings, setMemberRankings] = useState<MemberRankingsMap>({});
+  const [catalogGroups, setCatalogGroups] = useState<CatalogGroupsMap>(DEFAULT_CATALOG_GROUPS);
+  const [selectedCatalogGroupId, setSelectedCatalogGroupId] = useState<string>('marabunta');
+  const [groupOrderCarts, setGroupOrderCarts] = useState<Record<string, Record<string, number>>>({});
 
   const [currentTab, setCurrentTab] = useState<TabKey>('planning');
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -264,13 +298,17 @@ export default function App() {
   const [toastState, setToastState] = useState<{
     message: string;
     variant: ToastVariant;
-    withStockShortcut: boolean;
+    actionType?: 'stock' | 'loot';
   } | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [, setDayTick] = useState(() => isoDate(new Date()));
   const [recalcClockTick, setRecalcClockTick] = useState(() => Date.now());
   const toastTimerRef = useRef<number | null>(null);
   const didMigrateRewardPricesRef = useRef(false);
+  const didMigrateWhiskeyCatalogRef = useRef(false);
+  const didMigrateMarabuntaLinksRef = useRef(false);
+  const didMigrateEminenceCatalogRef = useRef(false);
+  const didTriggerSundayToastRef = useRef(false);
   const autoRecalcAttemptedDateRef = useRef<string>('');
 
   if (syncError) {
@@ -284,14 +322,17 @@ export default function App() {
         variant?: ToastVariant;
         durationMs?: number;
         withStockShortcut?: boolean;
+        actionType?: 'stock' | 'loot';
       }
     ) => {
       const variant = options?.variant ?? 'default';
       const durationMs = options?.durationMs ?? (variant === 'default' ? 3500 : 6500);
+      const actionType =
+        options?.actionType ?? (options?.withStockShortcut ? 'stock' : undefined);
       setToastState({
         message: msg,
         variant,
-        withStockShortcut: Boolean(options?.withStockShortcut),
+        actionType,
       });
       if (toastTimerRef.current) {
         window.clearTimeout(toastTimerRef.current);
@@ -349,6 +390,7 @@ export default function App() {
           },
           onHierarchy: (members) => setHierMembers(members),
           onMemberRankings: (rankings) => setMemberRankings(rankings),
+          onCatalog: (groups) => setCatalogGroups(groups),
           onRole: (role) => setMemberRole(role),
           onError: (err) => setSyncError(err),
         });
@@ -479,6 +521,160 @@ export default function App() {
     );
   }, [cartelStatus, isUnlocked, authUser, rewardStocks]);
 
+  useEffect(() => {
+    if (
+      didMigrateWhiskeyCatalogRef.current ||
+      cartelStatus !== 'ready' ||
+      !isUnlocked ||
+      !authUser
+    ) {
+      return;
+    }
+    const brad = catalogGroups.brad_recel;
+    const hasLegacyWhiskeyInBrad = brad?.items.some((it) => it.id === 'br_whiskey');
+    if (!hasLegacyWhiskeyInBrad) return;
+
+    didMigrateWhiskeyCatalogRef.current = true;
+    const nextGroups: CatalogGroupsMap = {
+      ...catalogGroups,
+      brad_recel: {
+        ...brad,
+        items: brad.items.filter((it) => it.id !== 'br_whiskey'),
+      },
+      ...(catalogGroups.eminence
+        ? {}
+        : { eminence: DEFAULT_CATALOG_GROUPS.eminence }),
+    };
+    setCatalogGroups(nextGroups);
+    void saveCatalogGroups(authUser.uid, nextGroups).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+  }, [cartelStatus, isUnlocked, authUser, catalogGroups]);
+
+  useEffect(() => {
+    if (
+      didMigrateEminenceCatalogRef.current ||
+      cartelStatus !== 'ready' ||
+      !isUnlocked ||
+      !authUser ||
+      Object.keys(catalogGroups).length === 0
+    ) {
+      return;
+    }
+
+    didMigrateEminenceCatalogRef.current = true;
+    if (catalogGroups.eminence) return;
+
+    const legacyWhiskey = catalogGroups.whiskey_acheteur;
+    const nextGroups: CatalogGroupsMap = { ...catalogGroups };
+    const eminenceGroup = {
+      ...DEFAULT_CATALOG_GROUPS.eminence,
+      contacts:
+        legacyWhiskey && legacyWhiskey.contacts.length > 0
+          ? legacyWhiskey.contacts
+          : DEFAULT_CATALOG_GROUPS.eminence.contacts,
+    };
+    nextGroups.eminence = eminenceGroup;
+
+    if (
+      legacyWhiskey &&
+      legacyWhiskey.items.every((it) => it.id === 'wh_whiskey' || it.id === 'br_whiskey')
+    ) {
+      delete nextGroups.whiskey_acheteur;
+    }
+
+    setCatalogGroups(nextGroups);
+    void saveCatalogGroups(authUser.uid, nextGroups).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+  }, [cartelStatus, isUnlocked, authUser, catalogGroups]);
+
+  useEffect(() => {
+    if (
+      didMigrateMarabuntaLinksRef.current ||
+      cartelStatus !== 'ready' ||
+      !isUnlocked ||
+      !authUser
+    ) {
+      return;
+    }
+    const marabunta = catalogGroups.marabunta;
+    if (!marabunta) return;
+
+    didMigrateMarabuntaLinksRef.current = true;
+    const expectedLinks: Record<string, GearKey> = {
+      mg_9mm: 'mun_9mm',
+      mg_45acp: 'mun_45acp',
+      mg_44mag: 'mun_44mag',
+      mg_50ae: 'mun_50ae',
+      mg_chg_fusil: 'acc_chg_fusil',
+      mg_chg_pompe: 'acc_chg_pompe',
+      mg_lunette_macro: 'acc_lunette_macro',
+      mg_poignee: 'acc_poignee',
+      mg_petite_lunette: 'acc_petite_lunette',
+    };
+
+    let changed = false;
+    const updatedItems = marabunta.items.map((item) => {
+      const targetKey = expectedLinks[item.id];
+      if (!targetKey) return item;
+      if (!item.linkedGearKey || item.linkedGearKey === 'mun_pistolet') {
+        changed = true;
+        return { ...item, linkedGearKey: targetKey };
+      }
+      return item;
+    });
+
+    if (!changed) return;
+
+    const nextGroups: CatalogGroupsMap = {
+      ...catalogGroups,
+      marabunta: {
+        ...marabunta,
+        items: updatedItems,
+      },
+    };
+    setCatalogGroups(nextGroups);
+    void saveCatalogGroups(authUser.uid, nextGroups).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+  }, [cartelStatus, isUnlocked, authUser, catalogGroups]);
+
+  useEffect(() => {
+    if (didTriggerSundayToastRef.current || cartelStatus !== 'ready') return;
+    const now = new Date();
+    if (now.getDay() !== 0) return;
+
+    const sundayKey = `cerberos_sunday_toast_${isoDate(now)}`;
+    try {
+      if (window.localStorage.getItem(sundayKey) === '1') {
+        didTriggerSundayToastRef.current = true;
+        return;
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    didTriggerSundayToastRef.current = true;
+    const timer = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(sundayKey, '1');
+      } catch {
+        // ignore storage errors
+      }
+      showToast(
+        "💎 C'est dimanche : jour de revente du cartel ! Pensez à vendre vos objets en coffre.",
+        {
+          variant: 'warning',
+          durationMs: 8500,
+          actionType: 'loot',
+        }
+      );
+    }, 1200);
+
+    return () => window.clearTimeout(timer);
+  }, [cartelStatus, showToast]);
+
   const kpis = useMemo(() => {
     let totalCost = 0;
     let extraLoss = 0;
@@ -511,6 +707,7 @@ export default function App() {
       inventoryStock,
       inventoryPrices,
       weaponsStock,
+      catalogGroups,
     });
 
     return {
@@ -522,13 +719,33 @@ export default function App() {
       rewardsValTotal,
       rewardsItemCount,
     };
-  }, [missionStates, weaponsLossAmount, rewardStocks, treasuryMoney, inventoryStock, inventoryPrices, weaponsStock]);
+  }, [
+    missionStates,
+    weaponsLossAmount,
+    rewardStocks,
+    treasuryMoney,
+    inventoryStock,
+    inventoryPrices,
+    weaponsStock,
+    catalogGroups,
+  ]);
 
   const handleGoToOrderPrep = useCallback(() => {
     setToastState(null);
-    setCurrentTab('inventory');
+    setCurrentTab('orders');
     window.setTimeout(() => {
       const el = document.getElementById('order-prep-panel');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 80);
+  }, []);
+
+  const handleGoToLootSale = useCallback(() => {
+    setToastState(null);
+    setCurrentTab('inventory');
+    window.setTimeout(() => {
+      const el = document.getElementById('loot-sale-section');
       if (el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
@@ -828,7 +1045,7 @@ export default function App() {
         nextInventory[gKey] = updatedStockQty;
         inventoryPatch[gKey] = updatedStockQty;
         if (diff > 0) {
-          const gName = INVENTORY_ITEMS.find((i) => i.key === gKey)?.name || gKey;
+          const gName = getStockKeyDisplayName(gKey, catalogGroups);
           newlyDebitedLabels.push(`-${diff} ${gName}`);
           newlyDebitedKeys.push(gKey);
         }
@@ -1289,13 +1506,45 @@ export default function App() {
     showToast('Semaine réinitialisée !');
   };
 
-  const handleUpdateStock = (key: string, delta: number) => {
+  const handleUpdateStock = (key: string, delta: number, deductIllegal: boolean = true) => {
     if (readonly || !authUser) return;
-    const nextQty = Math.max(0, (inventoryStock[key] || 0) + delta);
+    const prevQty = Math.max(0, Number(inventoryStock[key]) || 0);
+    const nextQty = Math.max(0, prevQty + delta);
+    const addedQty = Math.max(0, nextQty - prevQty);
     setInventoryStock((prev) => ({
       ...prev,
       [key]: nextQty,
     }));
+
+    const stdItem = INVENTORY_ITEMS.find((i) => i.key === key);
+    const extraItem = stdItem
+      ? undefined
+      : getCatalogExtraInventoryItems(catalogGroups).find((i) => i.key === key);
+    const unitPrice = getInventoryItemPrice(key, inventoryPrices, extraItem?.price);
+    const cost = addedQty * unitPrice;
+
+    if (deductIllegal && addedQty > 0 && cost > 0) {
+      const currentIllegal = Math.max(0, Number(treasuryMoney.illegal) || 0);
+      const updatedIllegal = Math.max(0, currentIllegal - cost);
+      setTreasuryMoney((prev) => ({ ...prev, illegal: updatedIllegal }));
+      void saveInventoryOrderReceipt(
+        authUser.uid,
+        { [key]: nextQty },
+        { illegal: updatedIllegal }
+      ).catch((err) => setSyncError(err instanceof Error ? err : new Error(String(err))));
+
+      const itemName = stdItem?.name || extraItem?.name || key;
+      if (currentIllegal < cost) {
+        showToast(
+          `+${addedQty} ${itemName} · Argent Sale à 0 $ (manquait ${formatMoney(cost - currentIllegal)})`,
+          { variant: 'warning' }
+        );
+      } else {
+        showToast(`+${addedQty} ${itemName} · -${formatMoney(cost)} Argent Sale`);
+      }
+      return;
+    }
+
     void saveInventoryItem(authUser.uid, key, nextQty).catch((err) =>
       setSyncError(err instanceof Error ? err : new Error(String(err)))
     );
@@ -1329,37 +1578,101 @@ export default function App() {
     qty: number;
     holderId: string;
     notes: string;
+    deductIllegal?: boolean;
   }) => {
     if (readonly || !authUser) return;
     const id = payload.id || 'w_' + Date.now().toString(36);
+    const cleanName = payload.name.trim().slice(0, 80);
+    const cleanVal = Math.max(0, Number(payload.value) || 0);
+    const cleanQty = Math.max(1, Math.floor(Number(payload.qty) || 1));
+    const prevQty = payload.id
+      ? Math.max(1, Math.floor(Number(weaponsStock[payload.id]?.qty) || 1))
+      : 0;
+    const addedUnits = payload.id ? Math.max(0, cleanQty - prevQty) : cleanQty;
+
     const nextWeapons: WeaponsStock = {
       ...weaponsStock,
       [id]: {
         id,
-        name: payload.name.trim().slice(0, 80),
-        value: Math.max(0, Number(payload.value) || 0),
-        qty: Math.max(1, Math.floor(Number(payload.qty) || 1)),
+        name: cleanName,
+        value: cleanVal,
+        qty: cleanQty,
         holderId: payload.holderId || 'coffre',
         notes: payload.notes.trim().slice(0, 160),
       },
     };
     setWeaponsStock(nextWeapons);
+
+    const shouldDeduct =
+      payload.id ? Boolean(payload.deductIllegal) : payload.deductIllegal !== false;
+    const cost = addedUnits * cleanVal;
+
+    if (shouldDeduct && cost > 0) {
+      const currentIllegal = Math.max(0, Number(treasuryMoney.illegal) || 0);
+      const updatedIllegal = Math.max(0, currentIllegal - cost);
+      setTreasuryMoney((prev) => ({ ...prev, illegal: updatedIllegal }));
+      void saveWeaponsWithTreasury(authUser.uid, nextWeapons, {
+        illegal: updatedIllegal,
+      }).catch((err) => setSyncError(err instanceof Error ? err : new Error(String(err))));
+
+      if (currentIllegal < cost) {
+        showToast(
+          `${cleanName} (${addedUnits}x) ajoutée · Argent Sale à 0 $ (manquait ${formatMoney(cost - currentIllegal)})`,
+          { variant: 'warning' }
+        );
+      } else {
+        showToast(
+          `${cleanName} (${addedUnits}x) ajoutée · -${formatMoney(cost)} Argent Sale`
+        );
+      }
+      return;
+    }
+
     void saveWeaponsStock(authUser.uid, nextWeapons).catch((err) =>
       setSyncError(err instanceof Error ? err : new Error(String(err)))
     );
-    showToast(payload.id ? 'Arme mise à jour.' : 'Arme ajoutée à l’arsenal.');
+    showToast(payload.id ? 'Équipement mis à jour.' : 'Ajouté à l’arsenal.');
   };
 
-  const handleUpdateWeaponQty = (id: string, delta: number) => {
+  const handleUpdateWeaponQty = (
+    id: string,
+    delta: number,
+    deductIllegal: boolean = true
+  ) => {
     if (readonly || !authUser) return;
     const existing = weaponsStock[id];
     if (!existing) return;
-    const nextQty = Math.max(1, Math.floor((Number(existing.qty) || 1) + delta));
+    const prevQty = Math.max(1, Math.floor(Number(existing.qty) || 1));
+    const nextQty = Math.max(1, prevQty + delta);
+    const addedQty = Math.max(0, nextQty - prevQty);
     const nextWeapons: WeaponsStock = {
       ...weaponsStock,
       [id]: { ...existing, qty: nextQty },
     };
     setWeaponsStock(nextWeapons);
+
+    const unitVal = Math.max(0, Number(existing.value) || 0);
+    const cost = addedQty * unitVal;
+
+    if (deductIllegal && addedQty > 0 && cost > 0) {
+      const currentIllegal = Math.max(0, Number(treasuryMoney.illegal) || 0);
+      const updatedIllegal = Math.max(0, currentIllegal - cost);
+      setTreasuryMoney((prev) => ({ ...prev, illegal: updatedIllegal }));
+      void saveWeaponsWithTreasury(authUser.uid, nextWeapons, {
+        illegal: updatedIllegal,
+      }).catch((err) => setSyncError(err instanceof Error ? err : new Error(String(err))));
+
+      if (currentIllegal < cost) {
+        showToast(
+          `+${addedQty} ${existing.name} · Argent Sale à 0 $ (manquait ${formatMoney(cost - currentIllegal)})`,
+          { variant: 'warning' }
+        );
+      } else {
+        showToast(`+${addedQty} ${existing.name} · -${formatMoney(cost)} Argent Sale`);
+      }
+      return;
+    }
+
     void saveWeaponsStock(authUser.uid, nextWeapons).catch((err) =>
       setSyncError(err instanceof Error ? err : new Error(String(err)))
     );
@@ -1441,6 +1754,133 @@ export default function App() {
     showToast(`Commande réceptionnée : +${totalAdded} pièce${totalAdded > 1 ? 's' : ''} ajoutée${totalAdded > 1 ? 's' : ''} au stock${debitMsg} !`);
   };
 
+  const handleSaveCatalogGroups = (nextGroups: CatalogGroupsMap) => {
+    if (readonly || !authUser) return;
+    setCatalogGroups(nextGroups);
+    void saveCatalogGroups(authUser.uid, nextGroups).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+  };
+
+  const handleAdjustGroupOrderItem = (groupId: string, itemId: string, delta: number) => {
+    setGroupOrderCarts((prev) => {
+      const grpCart = prev[groupId] || {};
+      const nextQty = Math.max(0, (Number(grpCart[itemId]) || 0) + delta);
+      const nextGrpCart = { ...grpCart };
+      if (nextQty === 0) delete nextGrpCart[itemId];
+      else nextGrpCart[itemId] = nextQty;
+      return { ...prev, [groupId]: nextGrpCart };
+    });
+  };
+
+  const handleSetGroupOrderItemQty = (groupId: string, itemId: string, qty: number) => {
+    setGroupOrderCarts((prev) => {
+      const grpCart = { ...(prev[groupId] || {}) };
+      const cleanQty = Math.max(0, Math.floor(Number(qty) || 0));
+      if (cleanQty === 0) delete grpCart[itemId];
+      else grpCart[itemId] = cleanQty;
+      return { ...prev, [groupId]: grpCart };
+    });
+  };
+
+  const handleClearGroupOrder = (groupId: string) => {
+    setGroupOrderCarts((prev) => {
+      const copy = { ...prev };
+      delete copy[groupId];
+      return copy;
+    });
+  };
+
+  const handleConfirmGroupOrder = (
+    group: CatalogGroup,
+    cartMap: Record<string, number>,
+    debitAccount: 'none' | 'legal' | 'illegal'
+  ) => {
+    if (readonly || !authUser) return;
+
+    let totalUnits = 0;
+    let totalCost = 0;
+    let totalLinkedAdded = 0;
+    const stockPatch: Record<string, number> = {};
+    const nextStock = { ...inventoryStock };
+
+    group.items.forEach((item) => {
+      if (item.tradeType !== 'sell') return;
+      const qty = Math.max(0, Math.floor(Number(cartMap[item.id]) || 0));
+      if (qty <= 0) return;
+
+      totalUnits += qty;
+      totalCost += qty * Math.max(0, Number(item.price) || 0);
+
+      let targetStockKey: string | null = null;
+      if (item.linkedGearKey && INVENTORY_ITEMS.some((inv) => inv.key === item.linkedGearKey)) {
+        targetStockKey = item.linkedGearKey;
+      } else if (item.category !== 'reparation' && item.category !== 'butin') {
+        targetStockKey = getCatalogStockKey(item.id);
+      }
+
+      if (targetStockKey) {
+        const updated =
+          Math.max(0, Math.floor(Number(nextStock[targetStockKey]) || 0)) + qty;
+        nextStock[targetStockKey] = updated;
+        stockPatch[targetStockKey] = updated;
+        totalLinkedAdded += qty;
+      }
+    });
+
+    if (totalUnits <= 0) return;
+    if (totalLinkedAdded > 0) {
+      setInventoryStock(nextStock);
+    }
+
+    let treasuryPatch: Partial<TreasuryMoney> | undefined;
+    let insufficientShortfall = 0;
+    if (debitAccount !== 'none' && totalCost > 0) {
+      const current = Math.max(0, Number(treasuryMoney[debitAccount]) || 0);
+      if (current < totalCost) insufficientShortfall = totalCost - current;
+      const updatedBal = Math.max(0, current - totalCost);
+      treasuryPatch = { [debitAccount]: updatedBal };
+      setTreasuryMoney((prev) => ({ ...prev, [debitAccount]: updatedBal }));
+    }
+
+    void saveInventoryOrderReceipt(authUser.uid, stockPatch, treasuryPatch).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+
+    handleClearGroupOrder(group.id);
+
+    const stockMsg =
+      totalLinkedAdded > 0
+        ? ` · +${totalLinkedAdded} au stock coffre`
+        : '';
+    const debitLabel = debitAccount === 'legal' ? 'Argent Légal' : 'Argent Sale';
+    const debitMsg =
+      debitAccount !== 'none' && totalCost > 0
+        ? insufficientShortfall > 0
+          ? ` · ${debitLabel} à 0 $ (manquait ${formatMoney(insufficientShortfall)})`
+          : ` · -${formatMoney(totalCost)} ${debitLabel}`
+        : '';
+
+    showToast(
+      `Commande ${group.name} validée (${totalUnits} article${totalUnits > 1 ? 's' : ''}${stockMsg}${debitMsg})`,
+      insufficientShortfall > 0 ? { variant: 'warning' } : undefined
+    );
+  };
+
+  const handleGoToOrdersWithGroup = useCallback((groupId: string) => {
+    setSelectedCatalogGroupId(groupId);
+    setCurrentTab('orders');
+    window.setTimeout(() => {
+      const el = document.getElementById('order-catalog-panel');
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+  }, []);
+
+  const handleOpenCatalog = useCallback((groupId?: string) => {
+    if (groupId) setSelectedCatalogGroupId(groupId);
+    setCurrentTab('catalog');
+  }, []);
+
   const handleUpdateTreasuryMoney = (type: keyof TreasuryMoney, val: number) => {
     if (readonly || !authUser) return;
     const cleanVal = Math.max(0, Number(val) || 0);
@@ -1485,6 +1925,70 @@ export default function App() {
     void saveRewardItem(authUser.uid, key, nextEntry).catch((err) =>
       setSyncError(err instanceof Error ? err : new Error(String(err)))
     );
+  };
+
+  const handleSellRewards = (
+    soldQuantities: Record<string, number>,
+    channelLabel: string,
+    customAmountOverride?: number
+  ) => {
+    if (readonly || !authUser) return;
+    const rewardPatches: Record<string, RewardStockEntry> = {};
+    const nextRewards = { ...rewardStocks };
+    let totalSoldUnits = 0;
+    let totalSaleAmount = 0;
+
+    Object.entries(soldQuantities).forEach(([key, rawQty]) => {
+      const itemRef = REWARD_ITEMS.find((i) => i.key === key);
+      if (!itemRef) return;
+      const existing = nextRewards[key] || { qty: 0, val: itemRef.defaultVal };
+      const currentQty = Math.max(0, Math.floor(Number(existing.qty) || 0));
+      const sellQty = Math.min(currentQty, Math.max(0, Math.floor(Number(rawQty) || 0)));
+      if (sellQty <= 0) return;
+
+      const unitVal =
+        existing.val !== undefined ? Math.max(0, Number(existing.val) || 0) : itemRef.defaultVal;
+      const updatedEntry: RewardStockEntry = {
+        qty: currentQty - sellQty,
+        val: unitVal,
+      };
+      nextRewards[key] = updatedEntry;
+      rewardPatches[key] = updatedEntry;
+      totalSoldUnits += sellQty;
+      totalSaleAmount += sellQty * unitVal;
+    });
+
+    const cleanSaleGain =
+      customAmountOverride !== undefined
+        ? Math.max(0, Math.round(customAmountOverride))
+        : Math.max(0, Math.round(totalSaleAmount));
+
+    if (totalSoldUnits <= 0 && cleanSaleGain <= 0) return;
+
+    const currentIllegal = Math.max(0, Number(treasuryMoney.illegal) || 0);
+    const updatedIllegal = currentIllegal + cleanSaleGain;
+
+    if (Object.keys(rewardPatches).length > 0) {
+      setRewardStocks(nextRewards);
+    }
+    setTreasuryMoney((prev) => ({
+      ...prev,
+      illegal: updatedIllegal,
+    }));
+
+    void saveLootSale(authUser.uid, rewardPatches, updatedIllegal).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+
+    if (totalSoldUnits > 0) {
+      showToast(
+        `Vente ${channelLabel} validée (${totalSoldUnits} objet${totalSoldUnits > 1 ? 's' : ''}) · +${formatMoney(cleanSaleGain)} ajouté à l'Argent Sale !`
+      );
+    } else {
+      showToast(
+        `Vente ${channelLabel} validée (montant ajusté) · +${formatMoney(cleanSaleGain)} ajouté à l'Argent Sale !`
+      );
+    }
   };
 
   const handleApplyOfficialRewardPrices = () => {
@@ -1623,6 +2127,7 @@ export default function App() {
       weaponsStock,
       weaponsLossAmount,
       hierMembers,
+      catalogGroups,
     });
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1848,6 +2353,22 @@ export default function App() {
               </button>
               <button
                 type="button"
+                onClick={() => setCurrentTab('orders')}
+                className={tabBtnClass('orders')}
+              >
+                <ShoppingCart className="w-3.5 h-3.5" />
+                Commandes
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentTab('catalog')}
+                className={tabBtnClass('catalog')}
+              >
+                <BookOpen className="w-3.5 h-3.5" />
+                Catalogue
+              </button>
+              <button
+                type="button"
                 onClick={() => setCurrentTab('treasury')}
                 className={tabBtnClass('treasury')}
               >
@@ -2057,6 +2578,7 @@ export default function App() {
             inventoryPrices={inventoryPrices}
             weaponsStock={weaponsStock}
             rewardStocks={rewardStocks}
+            catalogGroups={catalogGroups}
             missionStates={missionStates}
             scheduleMeta={scheduleMeta}
             treasuryMoney={treasuryMoney}
@@ -2065,12 +2587,54 @@ export default function App() {
             onUpdateStock={handleUpdateStock}
             onUpdateItemPrice={handleUpdateItemPrice}
             onResetStock={handleResetStock}
-            onReceiveOrder={handleReceiveOrder}
             onSaveWeapon={handleSaveWeapon}
             onUpdateWeaponQty={handleUpdateWeaponQty}
             onDeleteWeapon={handleDeleteWeapon}
             onLoseWeaponGlobal={handleLoseWeaponGlobal}
             onUpdateRewardQty={handleUpdateRewardQty}
+            onSellRewards={handleSellRewards}
+            onShowToast={showToast}
+          />
+        )}
+
+        {currentTab === 'orders' && (
+          <OrdersView
+            missionStates={missionStates}
+            scheduleMeta={scheduleMeta}
+            inventoryStock={inventoryStock}
+            inventoryPrices={inventoryPrices}
+            treasuryMoney={treasuryMoney}
+            catalogGroups={catalogGroups}
+            selectedCatalogGroupId={selectedCatalogGroupId}
+            onSelectCatalogGroupId={setSelectedCatalogGroupId}
+            groupOrderCarts={groupOrderCarts}
+            onAdjustGroupOrderItem={handleAdjustGroupOrderItem}
+            onClearGroupOrder={handleClearGroupOrder}
+            onConfirmGroupOrder={handleConfirmGroupOrder}
+            onOpenCatalog={handleOpenCatalog}
+            readonly={readonly}
+            onReceiveOrder={handleReceiveOrder}
+            onUpdateItemPrice={handleUpdateItemPrice}
+            onShowToast={showToast}
+          />
+        )}
+
+        {currentTab === 'catalog' && (
+          <CatalogView
+            catalogGroups={catalogGroups}
+            selectedGroupId={selectedCatalogGroupId}
+            onSelectGroupId={setSelectedCatalogGroupId}
+            groupOrderCarts={groupOrderCarts}
+            onAdjustGroupOrderItem={handleAdjustGroupOrderItem}
+            onSetGroupOrderItemQty={handleSetGroupOrderItemQty}
+            onClearGroupOrder={handleClearGroupOrder}
+            onConfirmGroupOrder={handleConfirmGroupOrder}
+            onGoToOrdersWithGroup={handleGoToOrdersWithGroup}
+            onSaveCatalogGroups={handleSaveCatalogGroups}
+            inventoryStock={inventoryStock}
+            rewardStocks={rewardStocks}
+            treasuryMoney={treasuryMoney}
+            readonly={readonly}
             onShowToast={showToast}
           />
         )}
@@ -2085,11 +2649,13 @@ export default function App() {
             missionStates={missionStates}
             weaponsLossAmount={weaponsLossAmount}
             members={hierMembers}
+            catalogGroups={catalogGroups}
             readonly={readonly}
             onUpdateTreasuryMoney={handleUpdateTreasuryMoney}
             onUpdateRewardQty={handleUpdateRewardQty}
             onUpdateRewardValue={handleUpdateRewardValue}
             onApplyOfficialRewardPrices={handleApplyOfficialRewardPrices}
+            onSellRewards={handleSellRewards}
           />
         )}
 
@@ -2177,8 +2743,20 @@ export default function App() {
       <Toast
         message={toastState?.message ?? null}
         variant={toastState?.variant}
-        actionLabel={toastState?.withStockShortcut ? 'Voir stock' : undefined}
-        onAction={toastState?.withStockShortcut ? handleGoToOrderPrep : undefined}
+        actionLabel={
+          toastState?.actionType === 'stock'
+            ? 'Voir stock'
+            : toastState?.actionType === 'loot'
+              ? 'Objets à vendre'
+              : undefined
+        }
+        onAction={
+          toastState?.actionType === 'stock'
+            ? handleGoToOrderPrep
+            : toastState?.actionType === 'loot'
+              ? handleGoToLootSale
+              : undefined
+        }
         onDismiss={() => setToastState(null)}
       />
     </div>

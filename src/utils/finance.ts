@@ -8,6 +8,8 @@ import {
   WEEKLY_SCHEDULE,
 } from '@/src/data/cartelData';
 import type {
+  CatalogGroupsMap,
+  CatalogItemCategory,
   DistinctionKey,
   GearKey,
   HierarchyMember,
@@ -112,15 +114,62 @@ export function getStatus(st?: MissionStateEntry): MissionStatus {
   return st.completed ? 'success' : '';
 }
 
+export function getCatalogStockKey(itemId: string): string {
+  const safe = itemId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 28);
+  return `cat_${safe || 'item'}`;
+}
+
+export interface CatalogExtraInventoryItem {
+  key: string;
+  itemId: string;
+  groupId: string;
+  groupName: string;
+  name: string;
+  price: number;
+  category: CatalogItemCategory;
+}
+
+export function getCatalogExtraInventoryItems(
+  catalogGroups?: CatalogGroupsMap
+): CatalogExtraInventoryItem[] {
+  if (!catalogGroups) return [];
+  const seenKeys = new Set<string>();
+  const result: CatalogExtraInventoryItem[] = [];
+  Object.values(catalogGroups)
+    .sort((a, b) => a.name.localeCompare(b.name, 'fr-FR'))
+    .forEach((group) => {
+      group.items.forEach((item) => {
+        if (item.tradeType !== 'sell') return;
+        if (item.linkedGearKey) return;
+        if (item.category === 'reparation' || item.category === 'butin') return;
+        const key = getCatalogStockKey(item.id);
+        if (seenKeys.has(key)) return;
+        seenKeys.add(key);
+        result.push({
+          key,
+          itemId: item.id,
+          groupId: group.id,
+          groupName: group.name,
+          name: item.name,
+          price: Math.max(0, Math.round(Number(item.price) || 0)),
+          category: item.category,
+        });
+      });
+    });
+  return result;
+}
+
 export function getInventoryItemPrice(
   key: string,
-  inventoryPrices?: InventoryPrices
+  inventoryPrices?: InventoryPrices,
+  fallbackPrice?: number
 ): number {
   if (inventoryPrices && inventoryPrices[key] !== undefined) {
     return Math.max(0, Number(inventoryPrices[key]) || 0);
   }
   const found = INVENTORY_ITEMS.find((i) => i.key === key);
-  return found ? found.price : 0;
+  if (found) return found.price;
+  return fallbackPrice !== undefined ? Math.max(0, Number(fallbackPrice) || 0) : 0;
 }
 
 export function getMissionCost(
@@ -325,13 +374,20 @@ export function calcStockAutonomy(params: {
 
 export function calcInventoryTotalValue(
   inventoryStock: InventoryStock,
-  inventoryPrices?: InventoryPrices
+  inventoryPrices?: InventoryPrices,
+  catalogGroups?: CatalogGroupsMap
 ): number {
-  return INVENTORY_ITEMS.reduce((sum, item) => {
+  const staticSum = INVENTORY_ITEMS.reduce((sum, item) => {
     const qty = Math.max(0, Number(inventoryStock[item.key]) || 0);
     const price = getInventoryItemPrice(item.key, inventoryPrices);
     return sum + qty * price;
   }, 0);
+  const dynamicSum = getCatalogExtraInventoryItems(catalogGroups).reduce((sum, item) => {
+    const qty = Math.max(0, Number(inventoryStock[item.key]) || 0);
+    const price = getInventoryItemPrice(item.key, inventoryPrices, item.price);
+    return sum + qty * price;
+  }, 0);
+  return staticSum + dynamicSum;
 }
 
 export function calcRewardsTotalValue(rewardStocks: RewardStocks): number {
@@ -367,6 +423,7 @@ export function calcTotalWealth(params: {
   inventoryStock: InventoryStock;
   inventoryPrices?: InventoryPrices;
   weaponsStock?: WeaponsStock;
+  catalogGroups?: CatalogGroupsMap;
 }): number {
   const {
     treasuryMoney,
@@ -374,12 +431,13 @@ export function calcTotalWealth(params: {
     inventoryStock,
     inventoryPrices,
     weaponsStock = {},
+    catalogGroups,
   } = params;
   return (
     Math.max(0, Number(treasuryMoney.legal) || 0) +
     Math.max(0, Number(treasuryMoney.illegal) || 0) +
     calcRewardsTotalValue(rewardStocks) +
-    calcInventoryTotalValue(inventoryStock, inventoryPrices) +
+    calcInventoryTotalValue(inventoryStock, inventoryPrices, catalogGroups) +
     calcWeaponsTotalValue(weaponsStock)
   );
 }
@@ -559,6 +617,7 @@ export function buildDiscordReport(params: {
   weaponsStock?: WeaponsStock;
   weaponsLossAmount: number;
   hierMembers?: HierarchyMember[];
+  catalogGroups?: CatalogGroupsMap;
 }): string {
   const {
     missionStates,
@@ -570,6 +629,7 @@ export function buildDiscordReport(params: {
     weaponsStock = {},
     weaponsLossAmount,
     hierMembers = [],
+    catalogGroups,
   } = params;
   const effectiveScheduleDays = getEffectiveSchedule(missionStates, scheduleMeta).days;
   let discordText = '```asciidoc\n';
@@ -591,11 +651,22 @@ export function buildDiscordReport(params: {
     }
   });
 
-  const inventoryValTotal = calcInventoryTotalValue(inventoryStock, inventoryPrices);
+  const inventoryValTotal = calcInventoryTotalValue(
+    inventoryStock,
+    inventoryPrices,
+    catalogGroups
+  );
   INVENTORY_ITEMS.forEach((i) => {
     const qty = Math.max(0, Number(inventoryStock[i.key]) || 0);
     if (qty > 0) {
       const price = getInventoryItemPrice(i.key, inventoryPrices);
+      discordText += `- [Stock] ${i.name} (${qty}x) : ${formatMoney(qty * price)}\n`;
+    }
+  });
+  getCatalogExtraInventoryItems(catalogGroups).forEach((i) => {
+    const qty = Math.max(0, Number(inventoryStock[i.key]) || 0);
+    if (qty > 0) {
+      const price = getInventoryItemPrice(i.key, inventoryPrices, i.price);
       discordText += `- [Stock] ${i.name} (${qty}x) : ${formatMoney(qty * price)}\n`;
     }
   });
@@ -621,6 +692,7 @@ export function buildDiscordReport(params: {
       inventoryStock,
       inventoryPrices,
       weaponsStock,
+      catalogGroups,
     })
   )}\n`;
   discordText += `---------------------------------------------\n`;

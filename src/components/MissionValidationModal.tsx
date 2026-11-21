@@ -1,5 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { INVENTORY_ITEMS, REWARD_ITEMS } from '@/src/data/cartelData';
+import {
+  getEminenceCatalogItemsMap,
+  getEminenceMissionByGearKey,
+  getStockKeyDisplayName,
+  resolveCatalogItemStockKey,
+} from '@/src/data/eminenceMissions';
 import type {
   HierarchyMember,
   InventoryPrices,
@@ -115,10 +121,35 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
     const prevUsed = getPreviousUsedGear(entry, mission);
     const hasMissionGear =
       mission.gearKey !== 'none' && INVENTORY_ITEMS.some((i) => i.key === mission.gearKey);
+    const blueprint = getEminenceMissionByGearKey(mission.gearKey);
+    const catalogMap = getEminenceCatalogItemsMap();
+
     if (Object.keys(prevUsed).length > 0) {
       setUsedGear(prevUsed);
     } else if (hasMissionGear && (inventoryStock[mission.gearKey] || 0) > 0) {
       setUsedGear({ [mission.gearKey]: 1 });
+    } else if (blueprint && blueprint.requirements.length > 0) {
+      // Fallback: auto-select solo Éminences components if a full kit is available in vault
+      const candidate: Record<string, number> = {};
+      let allInStock = true;
+      blueprint.requirements.forEach((req) => {
+        const sk = resolveCatalogItemStockKey(catalogMap.get(req.itemId));
+        if (!sk) {
+          allInStock = false;
+          return;
+        }
+        const avail = Math.max(0, Math.floor(Number(inventoryStock[sk]) || 0));
+        if (avail < req.qty) {
+          allInStock = false;
+        } else {
+          candidate[sk] = (candidate[sk] || 0) + req.qty;
+        }
+      });
+      if (allInStock && Object.keys(candidate).length > 0) {
+        setUsedGear(candidate);
+      } else {
+        setUsedGear({});
+      }
     } else {
       setUsedGear({});
     }
@@ -218,6 +249,28 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
   const prevUsedGear = getPreviousUsedGear(entry, mission);
   const gearItem = INVENTORY_ITEMS.find((i) => i.key === mission.gearKey);
 
+  const eminenceCatalogMap = getEminenceCatalogItemsMap();
+  const missionBlueprint = getEminenceMissionByGearKey(mission.gearKey);
+  const missionComponentItems = (() => {
+    if (!missionBlueprint) return [] as Array<{ key: string; name: string; category: string; reqQty: number }>;
+    const list: Array<{ key: string; name: string; category: string; reqQty: number }> = [];
+    const seen = new Set<string>();
+    missionBlueprint.requirements.forEach((req) => {
+      const catItem = eminenceCatalogMap.get(req.itemId);
+      const sk = resolveCatalogItemStockKey(catItem);
+      if (!catItem || !sk || sk === mission.gearKey || seen.has(sk)) return;
+      seen.add(sk);
+      const std = INVENTORY_ITEMS.find((i) => i.key === sk);
+      list.push({
+        key: sk,
+        name: std?.name || catItem.name,
+        category: std?.category || 'tool',
+        reqQty: req.qty,
+      });
+    });
+    return list;
+  })();
+
   const getMaxGearForKey = (k: string) =>
     Math.max(0, Number(inventoryStock[k]) || 0) + Math.max(0, Number(prevUsedGear[k]) || 0);
 
@@ -233,11 +286,27 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
     });
   };
 
-  const extraSelectedGearItems = INVENTORY_ITEMS.filter(
-    (item) =>
-      item.key !== mission.gearKey &&
-      ((usedGear[item.key] || 0) > 0 || (inventoryStock[item.key] || 0) > 0)
-  );
+  const componentKeySet = new Set(missionComponentItems.map((c) => c.key));
+  const extraSelectedGearItems: Array<{ key: string; name: string; category: string }> = [
+    ...INVENTORY_ITEMS.filter(
+      (item) =>
+        item.key !== mission.gearKey &&
+        !componentKeySet.has(item.key) &&
+        ((usedGear[item.key] || 0) > 0 || (inventoryStock[item.key] || 0) > 0)
+    ),
+    ...Object.keys(usedGear)
+      .filter(
+        (k) =>
+          k !== mission.gearKey &&
+          !componentKeySet.has(k) &&
+          !INVENTORY_ITEMS.some((i) => i.key === k)
+      )
+      .map((k) => ({
+        key: k,
+        name: getStockKeyDisplayName(k),
+        category: 'tool',
+      })),
+  ];
 
   const lootTotalVal =
     status === 'success'
@@ -321,7 +390,10 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
 
   const wasAlreadyDone = getStatus(entry) !== '';
 
-  const renderGearRow = (item: (typeof INVENTORY_ITEMS)[number]) => {
+  const renderGearRow = (
+    item: { key: string; name: string; category: string },
+    reqQtyHint?: number
+  ) => {
     const qty = usedGear[item.key] || 0;
     const prevQty = prevUsedGear[item.key] || 0;
     const maxAvail = getMaxGearForKey(item.key);
@@ -345,7 +417,10 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
       >
         <div className="min-w-0">
           <div className="font-bold text-white flex items-center gap-1.5 flex-wrap">
-            <span>📦 {item.name}</span>
+            <span>
+              📦 {reqQtyHint && reqQtyHint > 1 ? `${reqQtyHint}× ` : ''}
+              {item.name}
+            </span>
             {prevQty > 0 && (
               <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[10px] text-zinc-300 font-normal">
                 Déjà débité : {prevQty}
@@ -497,21 +572,34 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
 
           {gearItem ? (
             renderGearRow(gearItem)
-          ) : (
+          ) : missionComponentItems.length === 0 ? (
             <p className="text-[11px] text-zinc-400">
               Aucun pack obligatoire tarifé sur cette mission — tu peux quand même débiter un outil/pack ci-dessous si utilisé (ex: Outil de hacking).
             </p>
+          ) : null}
+
+          {missionComponentItems.length > 0 && (
+            <div className="space-y-1.5 pt-1">
+              {gearItem && (
+                <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+                  Ou items Éminences à l&apos;unité utilisés :
+                </div>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {missionComponentItems.map((comp) => renderGearRow(comp, comp.reqQty))}
+              </div>
+            </div>
           )}
 
           {(showOtherGear ||
-            (!gearItem && extraSelectedGearItems.length > 0) ||
+            (!gearItem && missionComponentItems.length === 0 && extraSelectedGearItems.length > 0) ||
             extraSelectedGearItems.some((it) => (usedGear[it.key] || 0) > 0)) && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
               {extraSelectedGearItems
                 .filter(
                   (it) =>
                     showOtherGear ||
-                    !gearItem ||
+                    (!gearItem && missionComponentItems.length === 0) ||
                     (usedGear[it.key] || 0) > 0
                 )
                 .map((item) => renderGearRow(item))}

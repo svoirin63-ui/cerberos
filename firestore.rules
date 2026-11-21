@@ -113,8 +113,8 @@ service cloud.firestore {
     function isValidInventoryState(data) {
       return data.keys().hasAll(['stock', 'updatedAt', 'updatedBy']) &&
         data.keys().hasOnly(['stock', 'prices', 'weapons', 'updatedAt', 'updatedBy']) &&
-        data.stock is map && data.stock.size() <= 40 &&
-        (!('prices' in data) || (data.prices is map && data.prices.size() <= 40)) &&
+        data.stock is map && data.stock.size() <= 100 &&
+        (!('prices' in data) || (data.prices is map && data.prices.size() <= 100)) &&
         (!('weapons' in data) || (data.weapons is map && data.weapons.size() <= 150)) &&
         data.updatedAt is timestamp &&
         isValidId(data.updatedBy);
@@ -140,11 +140,20 @@ service cloud.firestore {
         isValidId(data.updatedBy);
     }
 
+    function isValidCatalogState(data) {
+      return data.keys().hasAll(['groups', 'updatedAt', 'updatedBy']) &&
+        data.keys().hasOnly(['groups', 'updatedAt', 'updatedBy']) &&
+        data.groups is map && data.groups.size() <= 40 &&
+        data.updatedAt is timestamp &&
+        isValidId(data.updatedBy);
+    }
+
     function isValidStateDoc(stateId, data) {
       return (stateId == 'missions' && isValidMissionsState(data)) ||
         (stateId == 'inventory' && isValidInventoryState(data)) ||
         (stateId == 'treasury' && isValidTreasuryState(data)) ||
-        (stateId == 'hierarchy' && isValidHierarchyState(data));
+        (stateId == 'hierarchy' && isValidHierarchyState(data)) ||
+        (stateId == 'catalog' && isValidCatalogState(data));
     }
 
     function isValidStateUpdate(stateId, next, prev) {
@@ -160,7 +169,8 @@ service cloud.firestore {
         ])) ||
         (stateId == 'inventory' && next.diff(prev).affectedKeys().hasOnly(['stock', 'prices', 'weapons', 'updatedAt', 'updatedBy'])) ||
         (stateId == 'treasury' && next.diff(prev).affectedKeys().hasOnly(['legal', 'illegal', 'rewards', 'weaponsLossAmount', 'updatedAt', 'updatedBy'])) ||
-        (stateId == 'hierarchy' && next.diff(prev).affectedKeys().hasOnly(['members', 'rankings', 'updatedAt', 'updatedBy']));
+        (stateId == 'hierarchy' && next.diff(prev).affectedKeys().hasOnly(['members', 'rankings', 'updatedAt', 'updatedBy'])) ||
+        (stateId == 'catalog' && next.diff(prev).affectedKeys().hasOnly(['groups', 'updatedAt', 'updatedBy']));
     }
 
     match /admins/{uid} {
@@ -243,12 +253,12 @@ service cloud.firestore {
       match /state/{stateId} {
         allow get: if isValidId(cartelId) &&
           isValidId(stateId) &&
-          stateId in ['missions', 'inventory', 'treasury', 'hierarchy'] &&
+          stateId in ['missions', 'inventory', 'treasury', 'hierarchy', 'catalog'] &&
           (isAdmin() || isCartelMember(cartelId));
         allow list: if false;
         allow create: if isValidId(cartelId) &&
           isValidId(stateId) &&
-          stateId in ['missions', 'inventory', 'treasury', 'hierarchy'] &&
+          stateId in ['missions', 'inventory', 'treasury', 'hierarchy', 'catalog'] &&
           isCartelEditor(cartelId) &&
           isValidStateDoc(stateId, incoming()) &&
           incoming().updatedBy == request.auth.uid &&
@@ -256,7 +266,7 @@ service cloud.firestore {
           exists(/databases/$(database)/documents/cartels/$(cartelId));
         allow update: if isValidId(cartelId) &&
           isValidId(stateId) &&
-          stateId in ['missions', 'inventory', 'treasury', 'hierarchy'] &&
+          stateId in ['missions', 'inventory', 'treasury', 'hierarchy', 'catalog'] &&
           isCartelEditor(cartelId) &&
           isValidStateDoc(stateId, incoming()) &&
           incoming().updatedBy == request.auth.uid &&

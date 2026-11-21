@@ -1,6 +1,8 @@
 import React from 'react';
+import { LootSaleSection } from '@/src/components/LootSaleSection';
 import { INVENTORY_ITEMS, REWARD_ITEMS, WEEKLY_SCHEDULE } from '@/src/data/cartelData';
 import type {
+  CatalogGroupsMap,
   HierarchyMember,
   InventoryPrices,
   InventoryStock,
@@ -16,6 +18,7 @@ import {
   calcTotalWealth,
   calcWeaponsTotalValue,
   formatMoney,
+  getCatalogExtraInventoryItems,
   getInventoryItemPrice,
   getMissionEntry,
   getWeaponHolderName,
@@ -31,11 +34,17 @@ interface TreasuryViewProps {
   missionStates: MissionStates;
   weaponsLossAmount: number;
   members: HierarchyMember[];
+  catalogGroups?: CatalogGroupsMap;
   readonly: boolean;
   onUpdateTreasuryMoney: (type: keyof TreasuryMoney, val: number) => void;
   onUpdateRewardQty: (key: string, delta: number) => void;
   onUpdateRewardValue: (key: string, val: number) => void;
   onApplyOfficialRewardPrices?: () => void;
+  onSellRewards: (
+    soldQuantities: Record<string, number>,
+    channelLabel: string,
+    customAmountOverride?: number
+  ) => void;
 }
 
 export const TreasuryView: React.FC<TreasuryViewProps> = ({
@@ -47,14 +56,16 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
   missionStates,
   weaponsLossAmount,
   members,
+  catalogGroups,
   readonly,
   onUpdateTreasuryMoney,
   onUpdateRewardQty,
   onUpdateRewardValue,
   onApplyOfficialRewardPrices,
+  onSellRewards,
 }) => {
   const rewardsValTotal = calcRewardsTotalValue(rewardStocks);
-  const inventoryValTotal = calcInventoryTotalValue(inventoryStock, inventoryPrices);
+  const inventoryValTotal = calcInventoryTotalValue(inventoryStock, inventoryPrices, catalogGroups);
   const weaponsValTotal = calcWeaponsTotalValue(weaponsStock);
   const totalWeaponsCount = Object.values(weaponsStock).reduce(
     (sum, w) => sum + Math.max(0, Number(w?.qty) || 0),
@@ -66,10 +77,21 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
     inventoryStock,
     inventoryPrices,
     weaponsStock,
+    catalogGroups,
   });
-  const stockedItems = INVENTORY_ITEMS.filter(
-    (item) => (Number(inventoryStock[item.key]) || 0) > 0
-  );
+  const catalogExtraItems = getCatalogExtraInventoryItems(catalogGroups);
+  const stockedItems = [
+    ...INVENTORY_ITEMS.map((item) => ({
+      key: item.key,
+      name: item.name,
+      fallbackPrice: item.price,
+    })),
+    ...catalogExtraItems.map((item) => ({
+      key: item.key,
+      name: item.name,
+      fallbackPrice: item.price,
+    })),
+  ].filter((item) => (Number(inventoryStock[item.key]) || 0) > 0);
   const stockedWeapons = Object.values(weaponsStock).filter(
     (w) => w && (Number(w.qty) || 0) > 0
   );
@@ -80,6 +102,10 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
     return { item, qty, val, subTotal: qty * val };
   }).filter((r) => r.qty > 0);
   const totalRewardsQty = stockedRewards.reduce((sum, r) => sum + r.qty, 0);
+  const receleurValTotal = stockedRewards
+    .filter((r) => r.item.buyerGroup !== 'whiskey')
+    .reduce((sum, r) => sum + r.subTotal, 0);
+  const whiskeyValTotal = Math.max(0, rewardsValTotal - receleurValTotal);
 
   let weekMaterialCost = 0;
   let weekExtraLoss = 0;
@@ -185,11 +211,14 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
             </div>
             <div className="flex items-baseline justify-between gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5">
               <span className="text-[11px] text-zinc-400">
-                Recel
+                Recel / Whiskey
               </span>
               <span className="font-mono tabular-nums text-base font-bold text-gold">
                 {formatMoney(rewardsValTotal)}
               </span>
+            </div>
+            <div className="text-[10px] font-mono text-zinc-400 tabular-nums">
+              Receleur {formatMoney(receleurValTotal)} · Whiskey {formatMoney(whiskeyValTotal)}
             </div>
           </div>
 
@@ -241,7 +270,11 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
                 <div className="flex flex-wrap gap-1.5">
                   {stockedItems.map((item) => {
                     const qty = Number(inventoryStock[item.key]) || 0;
-                    const unitPrice = getInventoryItemPrice(item.key, inventoryPrices);
+                    const unitPrice = getInventoryItemPrice(
+                      item.key,
+                      inventoryPrices,
+                      item.fallbackPrice
+                    );
                     return (
                       <span
                         key={item.key}
@@ -328,137 +361,18 @@ export const TreasuryView: React.FC<TreasuryViewProps> = ({
           </div>
         )}
 
-        <div className="space-y-3 pt-2">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <h3 className="font-display text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
-              <span className="text-gold">✨</span> Actifs &amp; Objets du Marché Noir (À Vendre)
-            </h3>
-            <div className="flex items-center gap-3 flex-wrap">
-              <p className="text-[11px] text-zinc-400">
-                Tarifs officiels du receleur (Lingot d&apos;or = 180 $)
-              </p>
-              {!readonly &&
-                onApplyOfficialRewardPrices &&
-                REWARD_ITEMS.some((item) => {
-                  const stored = rewardStocks[item.key]?.val;
-                  return stored !== undefined && Number(stored) !== item.defaultVal;
-                }) && (
-                  <button
-                    type="button"
-                    onClick={onApplyOfficialRewardPrices}
-                    className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-gold/20 hover:bg-gold hover:text-obsidian text-gold-light border border-gold/50 transition cursor-pointer"
-                  >
-                    Réinitialiser aux tarifs officiels
-                  </button>
-                )}
-            </div>
-          </div>
-
-          <div className="bg-obsidian/70 border border-amber-500/35 rounded-xl p-3.5 space-y-2.5">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <span className="text-xs font-bold text-amber-200">
-                Valeur totale estimée à la revente ({totalRewardsQty} objet{totalRewardsQty > 1 ? 's' : ''})
-              </span>
-              <span className="font-display text-base font-extrabold text-gold tabular-nums">
-                {formatMoney(rewardsValTotal)}
-              </span>
-            </div>
-            {stockedRewards.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {stockedRewards.map(({ item, qty, subTotal }) => (
-                  <span
-                    key={item.key}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-900 border border-amber-500/30 text-[11px] text-zinc-200 tabular-nums"
-                  >
-                    <span>💎 {item.name}</span>
-                    <span className="font-mono text-zinc-400">&times;{qty}</span>
-                    <span className="font-mono font-bold text-gold">
-                      ({formatMoney(subTotal)})
-                    </span>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {REWARD_ITEMS.map((item) => {
-              const itemData = rewardStocks[item.key] || { qty: 0, val: item.defaultVal };
-              const qty = Number(itemData.qty) || 0;
-              const unitVal =
-                itemData.val !== undefined ? Number(itemData.val) : item.defaultVal;
-              const subTotal = qty * unitVal;
-
-              return (
-                <div
-                  key={item.key}
-                  className="bg-obsidian/80 border border-zinc-800 rounded-xl p-4 flex flex-col justify-between gap-3 shadow-md"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <h4 className="font-bold text-sm text-white">{item.name}</h4>
-                      <span className="text-[11px] font-mono tabular-nums text-gold">
-                        Total : {formatMoney(subTotal)}
-                      </span>
-                    </div>
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 tabular-nums">
-                      Quantité : {qty}
-                    </span>
-                  </div>
-
-                  <div className="space-y-2 pt-2 border-t border-zinc-800 text-xs">
-                    <div className="flex items-center justify-between">
-                      <span className="text-zinc-400">Valeur unitaire ($) :</span>
-                      <div className="relative w-24">
-                        <input
-                          type="number"
-                          min="0"
-                          value={unitVal}
-                          disabled={readonly}
-                          onChange={(e) =>
-                            onUpdateRewardValue(
-                              item.key,
-                              Math.max(0, Number(e.target.value) || 0)
-                            )
-                          }
-                          className={`w-full bg-zinc-950 border border-zinc-700 focus:border-gold rounded-lg px-2 py-1 text-right font-mono tabular-nums text-xs font-bold text-white focus:outline-none ${
-                            readonly ? 'opacity-60' : ''
-                          }`}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <span className="text-zinc-400">Nombre en coffre :</span>
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          disabled={readonly || qty <= 0}
-                          onClick={() => onUpdateRewardQty(item.key, -1)}
-                          className="w-7 h-7 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-white rounded-lg font-bold flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
-                        >
-                          -
-                        </button>
-                        <span className="font-mono tabular-nums text-sm font-bold text-white w-8 text-center">
-                          {qty}
-                        </span>
-                        <button
-                          type="button"
-                          disabled={readonly}
-                          onClick={() => onUpdateRewardQty(item.key, 1)}
-                          className="w-7 h-7 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-white rounded-lg font-bold flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
-                        >
-                          +
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
       </div>
+
+      <LootSaleSection
+        rewardStocks={rewardStocks}
+        treasuryMoney={treasuryMoney}
+        readonly={readonly}
+        allowPriceEdit
+        onUpdateRewardQty={onUpdateRewardQty}
+        onUpdateRewardValue={onUpdateRewardValue}
+        onApplyOfficialRewardPrices={onApplyOfficialRewardPrices}
+        onSellRewards={onSellRewards}
+      />
     </div>
   );
 };

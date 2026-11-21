@@ -680,6 +680,11 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                           Aujourd&apos;hui
                         </span>
                       )}
+                      {dayObj.day === 'Dimanche' && (
+                        <span className="px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider rounded bg-amber-500/20 text-amber-200 border border-amber-400/45">
+                          💎 Jour de revente
+                        </span>
+                      )}
                     </h3>
                     <p className="text-[11px] font-medium tabular-nums">
                       <span className="text-emerald-400">✅ {okCount}</span>{' '}

@@ -10,9 +10,11 @@ import {
 } from 'firebase/firestore';
 import {
   DAY_NAMES,
+  DEFAULT_CATALOG_GROUPS,
   DEFAULT_SECRET_CODE,
   DISTINCTION_DEFS,
   HIER_DEFAULTS,
+  INVENTORY_ITEMS,
 } from '@/src/data/cartelData';
 import {
   ADMIN_EMAIL,
@@ -22,7 +24,15 @@ import {
   OperationType,
 } from '@/src/firebase';
 import type {
+  CatalogContact,
+  CatalogGroup,
+  CatalogGroupColor,
+  CatalogGroupsMap,
+  CatalogItem,
+  CatalogItemCategory,
+  CatalogTradeType,
   DistinctionKey,
+  GearKey,
   HierarchyMember,
   InventoryPrices,
   InventoryStock,
@@ -240,7 +250,7 @@ function sanitizeInventoryPrices(raw: unknown): InventoryPrices {
   if (!raw || typeof raw !== 'object') return {};
   const clean: InventoryPrices = {};
   Object.entries(raw as Record<string, unknown>)
-    .slice(0, 40)
+    .slice(0, 100)
     .forEach(([k, val]) => {
       const key = k.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
       if (!key) return;
@@ -270,6 +280,109 @@ function sanitizeMemberRankings(raw: unknown): MemberRankingsMap {
         clean[id] = { bonusPoints, note, manualBadges };
       }
     });
+  return clean;
+}
+
+const VALID_CATALOG_COLORS = new Set<CatalogGroupColor>([
+  'blue',
+  'gold',
+  'crimson',
+  'emerald',
+  'purple',
+]);
+const VALID_CATALOG_CATEGORIES = new Set<CatalogItemCategory>([
+  'munitions',
+  'accessoires',
+  'gilets',
+  'armes',
+  'reparation',
+  'materiel',
+  'butin',
+  'autre',
+]);
+const VALID_GEAR_KEYS = new Set<string>(INVENTORY_ITEMS.map((i) => i.key));
+
+export function sanitizeCatalogGroups(raw: unknown): CatalogGroupsMap {
+  if (!raw || typeof raw !== 'object') return {};
+  const clean: CatalogGroupsMap = {};
+
+  Object.entries(raw as Record<string, CatalogGroup>)
+    .slice(0, 40)
+    .forEach(([key, group]) => {
+      if (!group || typeof group !== 'object') return;
+      const id = (typeof group.id === 'string' ? group.id : key)
+        .replace(/[^a-zA-Z0-9_-]/g, '')
+        .slice(0, 64);
+      const name = typeof group.name === 'string' ? group.name.trim().slice(0, 80) : '';
+      if (!id || !name) return;
+
+      const specialty =
+        typeof group.specialty === 'string' ? group.specialty.trim().slice(0, 120) : '';
+      const color: CatalogGroupColor = VALID_CATALOG_COLORS.has(group.color)
+        ? group.color
+        : 'gold';
+      const notes = typeof group.notes === 'string' ? group.notes.trim().slice(0, 300) : '';
+
+      const contacts: CatalogContact[] = Array.isArray(group.contacts)
+        ? group.contacts
+            .filter((c): c is CatalogContact => !!c && typeof c === 'object')
+            .slice(0, 20)
+            .map((c, idx) => ({
+              id:
+                typeof c.id === 'string' && c.id.trim()
+                  ? c.id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64)
+                  : `c_${idx + 1}`,
+              name: typeof c.name === 'string' ? c.name.trim().slice(0, 80) : '',
+              role: typeof c.role === 'string' ? c.role.trim().slice(0, 60) : '',
+              phone: typeof c.phone === 'string' ? c.phone.trim().slice(0, 40) : '',
+              notes: typeof c.notes === 'string' ? c.notes.trim().slice(0, 160) : '',
+            }))
+            .filter((c) => c.name.length > 0 || c.phone.length > 0)
+        : [];
+
+      const items: CatalogItem[] = Array.isArray(group.items)
+        ? group.items
+            .filter((it): it is CatalogItem => !!it && typeof it === 'object')
+            .slice(0, 100)
+            .map((it, idx) => {
+              const itemName =
+                typeof it.name === 'string' ? it.name.trim().slice(0, 80) : '';
+              const tradeType: CatalogTradeType =
+                it.tradeType === 'buyback' ? 'buyback' : 'sell';
+              const category: CatalogItemCategory = VALID_CATALOG_CATEGORIES.has(it.category)
+                ? it.category
+                : 'autre';
+              const rawGear = typeof it.linkedGearKey === 'string' ? it.linkedGearKey.trim() : '';
+              const linkedGearKey: GearKey | '' = VALID_GEAR_KEYS.has(rawGear)
+                ? (rawGear as GearKey)
+                : '';
+              return {
+                id:
+                  typeof it.id === 'string' && it.id.trim()
+                    ? it.id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64)
+                    : `it_${idx + 1}`,
+                name: itemName,
+                tradeType,
+                category,
+                price: Math.max(0, Math.round(Number(it.price) || 0)),
+                linkedGearKey,
+                notes: typeof it.notes === 'string' ? it.notes.trim().slice(0, 160) : '',
+              };
+            })
+            .filter((it) => it.name.length > 0)
+        : [];
+
+      clean[id] = {
+        id,
+        name,
+        specialty,
+        color,
+        notes,
+        contacts,
+        items,
+      };
+    });
+
   return clean;
 }
 
@@ -409,6 +522,25 @@ export async function bootstrapAndJoinCartel(
         handleFirestoreError(error, OperationType.CREATE, `cartels/${CARTEL_ID}/state/hierarchy`);
       }
     }
+
+    const catalogRef = doc(db, 'cartels', CARTEL_ID, 'state', 'catalog');
+    let catalogSnap;
+    try {
+      catalogSnap = await getDoc(catalogRef);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, `cartels/${CARTEL_ID}/state/catalog`);
+    }
+    if (!catalogSnap.exists()) {
+      try {
+        await setDoc(catalogRef, {
+          groups: sanitizeCatalogGroups(DEFAULT_CATALOG_GROUPS),
+          updatedAt: serverTimestamp(),
+          updatedBy: user.uid,
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `cartels/${CARTEL_ID}/state/catalog`);
+      }
+    }
   }
 
   let memberSnap;
@@ -455,6 +587,7 @@ export function subscribeCartelState(
     }) => void;
     onHierarchy: (members: HierarchyMember[]) => void;
     onMemberRankings?: (rankings: MemberRankingsMap) => void;
+    onCatalog?: (groups: CatalogGroupsMap) => void;
     onRole: (role: MemberRole) => void;
     onError: (err: Error) => void;
   }
@@ -570,12 +703,32 @@ export function subscribeCartelState(
     }
   );
 
+  const unsubCatalog = onSnapshot(
+    doc(db, 'cartels', CARTEL_ID, 'state', 'catalog'),
+    (snap) => {
+      if (!snap.exists()) {
+        callbacks.onCatalog?.(DEFAULT_CATALOG_GROUPS);
+        return;
+      }
+      const data = snap.data();
+      callbacks.onCatalog?.(sanitizeCatalogGroups(data.groups));
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.GET, `cartels/${CARTEL_ID}/state/catalog`);
+      } catch (err) {
+        callbacks.onError(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+  );
+
   return () => {
     unsubMissions();
     unsubInventory();
     unsubTreasury();
     unsubHierarchy();
     unsubMember();
+    unsubCatalog();
   };
 }
 
@@ -869,20 +1022,26 @@ export async function saveInventoryOrderReceipt(
   treasuryMoneyPatch?: Partial<TreasuryMoney>
 ): Promise<void> {
   const path = `cartels/${CARTEL_ID}/state/inventory`;
-  const batch = writeBatch(db);
-  const invUpdate: Record<string, unknown> = {
-    updatedAt: serverTimestamp(),
-    updatedBy: uid,
-  };
-  Object.entries(stockPatch).forEach(([k, q]) => {
-    invUpdate[`stock.${k}`] = Math.max(0, Math.floor(q));
-  });
-  batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'inventory'), invUpdate);
-
-  if (
+  const hasStock = Object.keys(stockPatch).length > 0;
+  const hasMoney = Boolean(
     treasuryMoneyPatch &&
-    (treasuryMoneyPatch.legal !== undefined || treasuryMoneyPatch.illegal !== undefined)
-  ) {
+      (treasuryMoneyPatch.legal !== undefined || treasuryMoneyPatch.illegal !== undefined)
+  );
+  if (!hasStock && !hasMoney) return;
+
+  const batch = writeBatch(db);
+  if (hasStock) {
+    const invUpdate: Record<string, unknown> = {
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    };
+    Object.entries(stockPatch).forEach(([k, q]) => {
+      invUpdate[`stock.${k}`] = Math.max(0, Math.floor(q));
+    });
+    batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'inventory'), invUpdate);
+  }
+
+  if (hasMoney && treasuryMoneyPatch) {
     const treasUpdate: Record<string, unknown> = {
       updatedAt: serverTimestamp(),
       updatedBy: uid,
@@ -914,6 +1073,43 @@ export async function saveWeaponsStock(
       updatedAt: serverTimestamp(),
       updatedBy: uid,
     });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function saveWeaponsWithTreasury(
+  uid: string,
+  weapons: WeaponsStock,
+  treasuryMoneyPatch?: Partial<TreasuryMoney>
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/state/inventory`;
+  const batch = writeBatch(db);
+  batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'inventory'), {
+    weapons: sanitizeWeaponsMap(weapons),
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+  });
+
+  if (
+    treasuryMoneyPatch &&
+    (treasuryMoneyPatch.legal !== undefined || treasuryMoneyPatch.illegal !== undefined)
+  ) {
+    const treasUpdate: Record<string, unknown> = {
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    };
+    if (treasuryMoneyPatch.legal !== undefined) {
+      treasUpdate.legal = Math.max(0, Number(treasuryMoneyPatch.legal) || 0);
+    }
+    if (treasuryMoneyPatch.illegal !== undefined) {
+      treasUpdate.illegal = Math.max(0, Number(treasuryMoneyPatch.illegal) || 0);
+    }
+    batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'treasury'), treasUpdate);
+  }
+
+  try {
+    await batch.commit();
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -1007,6 +1203,34 @@ export async function saveRewardPricesBatch(
   }
 }
 
+export async function saveLootSale(
+  uid: string,
+  rewardPatches: Record<string, RewardStockEntry>,
+  updatedIllegal: number
+): Promise<void> {
+  const keys = Object.keys(rewardPatches);
+  const path = `cartels/${CARTEL_ID}/state/treasury`;
+  const payload: Record<string, unknown> = {
+    illegal: Math.max(0, Math.round(Number(updatedIllegal) || 0)),
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+  };
+  keys.forEach((key) => {
+    const cleanKey = key.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+    if (!cleanKey) return;
+    const entry = rewardPatches[key];
+    payload[`rewards.${cleanKey}`] = {
+      qty: Math.max(0, Math.floor(Number(entry.qty) || 0)),
+      val: Math.max(0, Number(entry.val) || 0),
+    };
+  });
+  try {
+    await updateDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'treasury'), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
 export async function saveWeaponsLoss(uid: string, amount: number): Promise<void> {
   const path = `cartels/${CARTEL_ID}/state/treasury`;
   try {
@@ -1044,6 +1268,22 @@ export async function saveMemberRankings(
   try {
     await updateDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'hierarchy'), {
       rankings: sanitizeMemberRankings(rankings),
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function saveCatalogGroups(
+  uid: string,
+  groups: CatalogGroupsMap
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/state/catalog`;
+  try {
+    await setDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'catalog'), {
+      groups: sanitizeCatalogGroups(groups),
       updatedAt: serverTimestamp(),
       updatedBy: uid,
     });

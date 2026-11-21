@@ -135,11 +135,12 @@
       "type": "object",
       "properties": {
         "stock": {
-          "type": "object"
+          "type": "object",
+          "description": "Bounded map (up to 100 keys) of equipment, ammo, accessory, and catalog item quantities"
         },
         "prices": {
           "type": "object",
-          "description": "Custom unit prices overrides for inventory equipment items"
+          "description": "Bounded map (up to 100 keys) of custom unit price overrides for inventory items"
         },
         "weapons": {
           "type": "object",
@@ -212,6 +213,28 @@
         }
       },
       "required": ["members", "updatedAt", "updatedBy"]
+    },
+    "CatalogState": {
+      "title": "CatalogState",
+      "description": "Shared supplier/gang catalog with group contacts and items they sell or buy back",
+      "type": "object",
+      "properties": {
+        "groups": {
+          "type": "object",
+          "description": "Map of groupId to group profile (name, specialty, color, notes, contacts, items)"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        }
+      },
+      "required": ["groups", "updatedAt", "updatedBy"]
     }
   },
   "firestore": {
@@ -242,6 +265,10 @@
     "/cartels/{cartelId}/state/hierarchy": {
       "schema": { "$ref": "#/entities/HierarchyState" },
       "description": "Live cartel hierarchy roster"
+    },
+    "/cartels/{cartelId}/state/catalog": {
+      "schema": { "$ref": "#/entities/CatalogState" },
+      "description": "Live catalog of external groups, contacts, and buy/sell prices"
     }
   }
 }

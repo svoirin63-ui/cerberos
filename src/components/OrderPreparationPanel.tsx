@@ -54,7 +54,7 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
   const [excludeDone, setExcludeDone] = useState<boolean>(true);
   const [showFullCatalog, setShowFullCatalog] = useState<boolean>(false);
   const [manualDeltas, setManualDeltas] = useState<Record<string, number>>({});
-  const [debitAccount, setDebitAccount] = useState<'none' | 'legal' | 'illegal'>('none');
+  const [debitAccount, setDebitAccount] = useState<'none' | 'legal' | 'illegal'>('illegal');
 
   const safeStartDay = DAY_NAMES.includes(startDay) ? startDay : detectedToday;
   const startIdx = Math.max(0, DAY_NAMES.indexOf(safeStartDay));
@@ -113,8 +113,13 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
     return { coveredDays: daysList, neededByKey: needs };
   }, [daysAhead, startIdx, excludeDone, missionStates, effectiveDays]);
 
+  const heistGearItems = useMemo(
+    () => INVENTORY_ITEMS.filter((i) => i.category === 'tool' || i.category === 'heist_pack'),
+    []
+  );
+
   const rows = useMemo(() => {
-    return INVENTORY_ITEMS.map((item) => {
+    return heistGearItems.map((item) => {
       const unitPrice = getInventoryItemPrice(item.key, inventoryPrices);
       const needed = neededByKey[item.key] || 0;
       const inStock = Math.max(0, Math.floor(Number(inventoryStock[item.key]) || 0));
@@ -136,7 +141,7 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
         autoInfo,
       };
     });
-  }, [neededByKey, inventoryStock, inventoryPrices, manualDeltas, autonomy]);
+  }, [heistGearItems, neededByKey, inventoryStock, inventoryPrices, manualDeltas, autonomy]);
 
   const visibleRows = useMemo(() => {
     if (showFullCatalog) return rows;
@@ -227,7 +232,7 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
     if (readonly || orderSummary.totalUnits <= 0) return;
     onReceiveOrder(orderSummary.orderMap, debitAccount, orderSummary.totalCost);
     setManualDeltas({});
-    setDebitAccount('none');
+    setDebitAccount('illegal');
   };
 
   return (
@@ -339,7 +344,7 @@ export const OrderPreparationPanel: React.FC<OrderPreparationPanelProps> = ({
                 onChange={(e) => setShowFullCatalog(e.target.checked)}
                 className="w-4 h-4 accent-amber-400 cursor-pointer"
               />
-              Afficher tout le catalogue ({INVENTORY_ITEMS.length} articles)
+              Afficher tout le catalogue braquage ({heistGearItems.length} articles)
             </label>
           </div>
         </div>
