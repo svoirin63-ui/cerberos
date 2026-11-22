@@ -33,11 +33,7 @@ import {
   REWARD_ITEMS,
   TOTAL_WEEKLY_MISSIONS,
 } from '@/src/data/cartelData';
-import {
-  EMINENCE_MISSIONS,
-  getEminenceCatalogItemsMap,
-  resolveCatalogItemStockKey,
-} from '@/src/data/eminenceMissions';
+import { checkMissionStockAvailability } from '@/src/data/eminenceMissions';
 import type {
   CatalogGroupsMap,
   HierarchyMember,
@@ -55,7 +51,6 @@ import type {
 import {
   calcInventoryTotalValue,
   calcRewardsTotalValue,
-  calcStockAutonomy,
   calcTotalWealth,
   calcWeaponsTotalValue,
   computeMemberLeaderboard,
@@ -71,6 +66,7 @@ import {
   getEffectiveSchedule,
   type EffectiveMission,
 } from '@/src/utils/schedule';
+import { simulateMissionSupplyPlan } from '@/src/utils/missionSupply';
 
 interface DashboardHomeViewProps {
   missionStates: MissionStates;
@@ -196,52 +192,29 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
   const activeDayName = activeDaySchedule?.day || 'Lundi';
   const isSundayToday = new Date().getDay() === 0;
 
-  const autonomy = useMemo(
+  const supplyPlan = useMemo(
     () =>
-      calcStockAutonomy({
+      simulateMissionSupplyPlan({
         inventoryStock,
+        inventoryPrices,
+        catalogGroups,
         missionStates,
         scheduleMeta,
-        excludeDone: true,
       }),
-    [inventoryStock, missionStates, scheduleMeta]
+    [inventoryStock, inventoryPrices, catalogGroups, missionStates, scheduleMeta]
   );
 
   const missionReadiness = useMemo(() => {
-    const catalogMap = getEminenceCatalogItemsMap(catalogGroups);
-    let readyCount = 0;
-    const readyMajorTitles: string[] = [];
-
-    EMINENCE_MISSIONS.forEach((bp) => {
-      const packItem = bp.packItemId ? catalogMap.get(bp.packItemId) : undefined;
-      const packKey = resolveCatalogItemStockKey(packItem);
-      const packQty = packKey ? Math.max(0, Math.floor(Number(inventoryStock[packKey]) || 0)) : 0;
-
-      const reqsMet =
-        bp.requirements.length > 0 &&
-        bp.requirements.every((req) => {
-          const item = catalogMap.get(req.itemId);
-          const sKey = resolveCatalogItemStockKey(item);
-          if (!sKey) return false;
-          const avail = Math.max(0, Math.floor(Number(inventoryStock[sKey]) || 0));
-          return avail >= req.qty;
-        });
-
-      const isReady = packQty > 0 || reqsMet;
-      if (isReady) {
-        readyCount++;
-        if (bp.major) {
-          readyMajorTitles.push(bp.title);
-        }
-      }
-    });
+    const readyMajorTitles = supplyPlan.missionsOverview
+      .filter((ov) => ov.mission.major && ov.totalReadyRuns > 0)
+      .map((ov) => ov.mission.title);
 
     return {
-      readyCount,
-      total: EMINENCE_MISSIONS.length,
+      readyCount: supplyPlan.readyMissionsCount,
+      total: supplyPlan.totalMissionsCount,
       readyMajorTitles,
     };
-  }, [catalogGroups, inventoryStock]);
+  }, [supplyPlan]);
 
   const lootSummary = useMemo(() => {
     const whiskeyItem = REWARD_ITEMS.find((r) => r.key === 'whiskey');
@@ -364,9 +337,9 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
                 Quartier Général · Semaine {weekRangeText(missionStates)}
               </div>
               <div className="text-[11px] font-mono text-zinc-300 tabular-nums">
-                {autonomy.allOver30Days
+                {supplyPlan.allOver30Days
                   ? 'Autonomie stock : > 30 jours'
-                  : `Autonomie stock : ${autonomy.minDaysCovered} jour${autonomy.minDaysCovered > 1 ? 's' : ''}`}
+                  : `Autonomie stock : ${supplyPlan.minDaysCovered} jour${supplyPlan.minDaysCovered > 1 ? 's' : ''}`}
               </div>
             </div>
 
@@ -480,9 +453,24 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
             <div className="space-y-1.5 max-h-[250px] overflow-y-auto pr-1">
               {(activeDaySchedule?.missions || []).map((m: EffectiveMission) => {
                 const st = getStatus(getMissionEntry(missionStates, m.id));
-                const gearAvail =
-                  m.gearKey === 'none' ||
-                  (Math.max(0, Number(inventoryStock[m.gearKey]) || 0) > 0);
+                const alloc = supplyPlan.allocationsByMissionId[m.id];
+                const fallbackCheck = alloc
+                  ? null
+                  : checkMissionStockAvailability(m.gearKey, inventoryStock, catalogGroups);
+                const gearAvail = alloc
+                  ? alloc.available
+                  : Boolean(fallbackCheck?.available);
+                const viaSoloOnly = alloc
+                  ? alloc.viaSoloOnly
+                  : Boolean(fallbackCheck?.viaSoloOnly);
+                const missingShortLabel =
+                  !gearAvail && alloc && alloc.missingItems.length > 0
+                    ? alloc.missingItems
+                        .map((mi) =>
+                          mi.missingQty > 1 ? `${mi.missingQty}× ${mi.name}` : mi.name
+                        )
+                        .join(', ')
+                    : null;
                 return (
                   <button
                     key={m.id}
@@ -528,7 +516,13 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
                         {m.major ? 'Gros Coup' : 'Opération'} · {m.crims} crims
                         {m.gearKey !== 'none' && !st && (
                           <span className={gearAvail ? ' text-emerald-400/90' : ' text-crimson-light'}>
-                            {gearAvail ? ' · Matériel OK' : ' · Stock pack 0'}
+                            {gearAvail
+                              ? viaSoloOnly
+                                ? ' · Matériel OK (items seuls)'
+                                : ' · Matériel OK'
+                              : missingShortLabel
+                                ? ` · Manque ${missingShortLabel}`
+                                : ' · Stock insuffisant'}
                           </span>
                         )}
                       </div>
@@ -814,17 +808,17 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
                 style={{ width: `${weekProgressPct}%` }}
               />
             </div>
-            {!autonomy.allOver30Days && autonomy.limitingItems.length > 0 && (
+            {!supplyPlan.allOver30Days && supplyPlan.limitingMissions.length > 0 && (
               <div className="flex items-center gap-2 text-[11px] text-amber-300 pt-1">
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                 <span>
-                  Stock limitant ({autonomy.minDaysCovered} j) :{' '}
-                  {autonomy.limitingItems
+                  Stock limitant ({supplyPlan.minDaysCovered} j) :{' '}
+                  {supplyPlan.limitingMissions
                     .slice(0, 3)
-                    .map((item) => item.name)
+                    .map((item) => item.title)
                     .join(', ')}
-                  {autonomy.limitingItems.length > 3
-                    ? ` (+${autonomy.limitingItems.length - 3})`
+                  {supplyPlan.limitingMissions.length > 3
+                    ? ` (+${supplyPlan.limitingMissions.length - 3})`
                     : ''}
                 </span>
               </div>

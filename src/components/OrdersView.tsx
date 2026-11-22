@@ -32,6 +32,10 @@ interface OrdersViewProps {
     debitAccount: 'none' | 'legal' | 'illegal'
   ) => void;
   onOpenCatalog: (groupId?: string) => void;
+  onSendToEminenceCart?: (
+    catalogItemsQty: Record<string, number>,
+    options?: { navigateToOrders?: boolean; replaceCart?: boolean }
+  ) => void;
   readonly: boolean;
   onReceiveOrder: (
     orderMap: Record<string, number>,
@@ -84,6 +88,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   onClearGroupOrder,
   onConfirmGroupOrder,
   onOpenCatalog,
+  onSendToEminenceCart,
   readonly,
   onReceiveOrder,
   onUpdateItemPrice,
@@ -351,9 +356,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
           scheduleMeta={scheduleMeta}
           inventoryStock={inventoryStock}
           inventoryPrices={inventoryPrices}
+          catalogGroups={catalogGroups}
           treasuryMoney={treasuryMoney}
           readonly={readonly}
           onReceiveOrder={onReceiveOrder}
+          onSendToEminenceCart={onSendToEminenceCart}
           onShowToast={onShowToast}
         />
       )}

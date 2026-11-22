@@ -1,5 +1,5 @@
 import { DEFAULT_CATALOG_GROUPS, INVENTORY_ITEMS } from '@/src/data/cartelData';
-import type { CatalogGroupsMap, CatalogItem, GearKey } from '@/src/types/cartel';
+import type { CatalogGroupsMap, CatalogItem, GearKey, InventoryStock } from '@/src/types/cartel';
 import { getCatalogStockKey } from '@/src/utils/finance';
 
 export interface EminenceMissionRequirement {
@@ -288,3 +288,72 @@ export const EMINENCE_ALL_MISSION_STOCK_KEYS: Set<string> = (() => {
   });
   return set;
 })();
+
+export interface MissionStockAvailability {
+  available: boolean;
+  count: number;
+  packCount: number;
+  soloCount: number;
+  viaSoloOnly: boolean;
+}
+
+export function getSoloKitStockRequirements(
+  gearKey: GearKey | string,
+  catalogGroups?: CatalogGroupsMap
+): Array<{ stockKey: string; qty: number }> {
+  const blueprint = getEminenceMissionByGearKey(gearKey);
+  if (!blueprint || blueprint.requirements.length === 0) return [];
+
+  const catalogMap = getEminenceCatalogItemsMap(catalogGroups);
+  const aggregated = new Map<string, number>();
+
+  for (const req of blueprint.requirements) {
+    const stockKey = resolveCatalogItemStockKey(catalogMap.get(req.itemId));
+    if (!stockKey) {
+      return [];
+    }
+    // Skip items that share the exact same stockKey as the pack/tool itself (e.g. ATM, Maison)
+    if (stockKey === gearKey) continue;
+    aggregated.set(stockKey, (aggregated.get(stockKey) || 0) + Math.max(1, req.qty));
+  }
+
+  return Array.from(aggregated.entries()).map(([stockKey, qty]) => ({ stockKey, qty }));
+}
+
+export function checkMissionStockAvailability(
+  gearKey: GearKey | string,
+  inventoryStock: InventoryStock,
+  catalogGroups?: CatalogGroupsMap
+): MissionStockAvailability {
+  if (!gearKey || gearKey === 'none') {
+    return {
+      available: true,
+      count: 999,
+      packCount: 999,
+      soloCount: 0,
+      viaSoloOnly: false,
+    };
+  }
+
+  const packCount = Math.max(0, Math.floor(Number(inventoryStock[gearKey]) || 0));
+  const soloReqs = getSoloKitStockRequirements(gearKey, catalogGroups);
+
+  let soloCount = 0;
+  if (soloReqs.length > 0) {
+    soloCount = Math.min(
+      ...soloReqs.map(({ stockKey, qty }) =>
+        Math.floor(Math.max(0, Math.floor(Number(inventoryStock[stockKey]) || 0)) / qty)
+      )
+    );
+  }
+
+  const totalCount = packCount + soloCount;
+  return {
+    available: totalCount > 0,
+    count: totalCount,
+    packCount,
+    soloCount,
+    viaSoloOnly: packCount === 0 && soloCount > 0,
+  };
+}
+

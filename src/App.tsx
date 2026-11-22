@@ -44,7 +44,14 @@ import {
   TOTAL_WEEKLY_MISSIONS,
   WEEKLY_SCHEDULE,
 } from '@/src/data/cartelData';
-import { getStockKeyDisplayName } from '@/src/data/eminenceMissions';
+import {
+  checkMissionStockAvailability,
+  EMINENCE_MISSIONS,
+  getEminenceCatalogItemsMap,
+  getSoloKitStockRequirements,
+  getStockKeyDisplayName,
+  resolveCatalogItemStockKey,
+} from '@/src/data/eminenceMissions';
 import { auth, googleProvider } from '@/src/firebase';
 import {
   bootstrapAndJoinCartel,
@@ -126,6 +133,7 @@ import {
   getMsUntilNextDailyRecalc,
   isPastDailyRecalcTime,
 } from '@/src/utils/schedule';
+import { simulateMissionSupplyPlan } from '@/src/utils/missionSupply';
 
 const LEGACY_STORAGE_KEYS = {
   missions: 'los_cerberos_local_state',
@@ -195,8 +203,9 @@ function buildValidationStockAlert(params: {
   debitedKeys: string[];
   missionGearKey: string;
   nextInventory: InventoryStock;
+  catalogGroups?: CatalogGroupsMap;
 }): { variant: ToastVariant; message: string } | null {
-  const { debitedKeys, missionGearKey, nextInventory } = params;
+  const { debitedKeys, missionGearKey, nextInventory, catalogGroups } = params;
   const alerts: Array<{ variant: ToastVariant; text: string }> = [];
 
   const keysToCheck =
@@ -212,7 +221,7 @@ function buildValidationStockAlert(params: {
 
     if (!item) {
       if (gKey.startsWith('cat_em_') && debitedKeys.includes(gKey)) {
-        const label = getStockKeyDisplayName(gKey);
+        const label = getStockKeyDisplayName(gKey, catalogGroups);
         if (remaining === 0) {
           alerts.push({
             variant: 'critical',
@@ -230,6 +239,9 @@ function buildValidationStockAlert(params: {
 
     if (item.category === 'heist_pack') {
       if (remaining === 0) {
+        if (!debitedKeys.includes(gKey) && checkMissionStockAvailability(gKey, nextInventory, catalogGroups).available) {
+          return;
+        }
         alerts.push({
           variant: 'critical',
           text:
@@ -243,6 +255,9 @@ function buildValidationStockAlert(params: {
 
     if (item.category === 'tool' || item.category === 'protection') {
       if (remaining === 0) {
+        if (!debitedKeys.includes(gKey) && checkMissionStockAvailability(gKey, nextInventory, catalogGroups).available) {
+          return;
+        }
         alerts.push({
           variant: 'critical',
           text: debitedKeys.includes(gKey)
@@ -842,6 +857,26 @@ export default function App() {
         nextGearConsumed = true;
         nextUsedGear = { ...nextUsedGear, [mission.gearKey]: (nextUsedGear[mission.gearKey] || 0) + 1 };
         setInventoryStock((prev) => ({ ...prev, [mission.gearKey]: updatedQty }));
+      } else {
+        const soloReqs = getSoloKitStockRequirements(mission.gearKey, catalogGroups);
+        const canUseSolo =
+          soloReqs.length > 0 &&
+          soloReqs.every(
+            ({ stockKey, qty }) =>
+              Math.max(0, Math.floor(Number(inventoryStock[stockKey]) || 0)) >= qty
+          );
+        if (canUseSolo) {
+          inventoryPatch = {};
+          const updatedStock = { ...inventoryStock };
+          soloReqs.forEach(({ stockKey, qty }) => {
+            const updatedQty = Math.max(0, (updatedStock[stockKey] || 0) - qty);
+            updatedStock[stockKey] = updatedQty;
+            inventoryPatch![stockKey] = updatedQty;
+            nextUsedGear[stockKey] = (nextUsedGear[stockKey] || 0) + qty;
+          });
+          nextGearConsumed = true;
+          setInventoryStock(updatedStock);
+        }
       }
     } else if (prevStatus !== '' && next === '') {
       const keysToRestore = Object.keys(nextUsedGear);
@@ -968,9 +1003,10 @@ export default function App() {
         ? { ...inventoryStock, ...inventoryPatch }
         : inventoryStock;
       const stockAlert = buildValidationStockAlert({
-        debitedKeys: inventoryPatch ? [mission.gearKey] : [],
+        debitedKeys: inventoryPatch ? Object.keys(inventoryPatch) : [],
         missionGearKey: mission.gearKey,
         nextInventory: updatedMap,
+        catalogGroups,
       });
 
       if (stockAlert) {
@@ -1237,6 +1273,7 @@ export default function App() {
       debitedKeys: newlyDebitedKeys,
       missionGearKey: mission.gearKey,
       nextInventory,
+      catalogGroups,
     });
 
     if (stockAlert) {
@@ -1299,6 +1336,23 @@ export default function App() {
           inventoryPatch[m.gearKey] = curQty - 1;
           nextGearConsumed = true;
           nextUsedGear = { ...nextUsedGear, [m.gearKey]: (nextUsedGear[m.gearKey] || 0) + 1 };
+        } else {
+          const soloReqs = getSoloKitStockRequirements(m.gearKey, catalogGroups);
+          const canUseSolo =
+            soloReqs.length > 0 &&
+            soloReqs.every(
+              ({ stockKey, qty }) =>
+                Math.max(0, Math.floor(Number(nextInventory[stockKey]) || 0)) >= qty
+            );
+          if (canUseSolo) {
+            soloReqs.forEach(({ stockKey, qty }) => {
+              const updatedQty = Math.max(0, (nextInventory[stockKey] || 0) - qty);
+              nextInventory[stockKey] = updatedQty;
+              inventoryPatch[stockKey] = updatedQty;
+              nextUsedGear[stockKey] = (nextUsedGear[stockKey] || 0) + qty;
+            });
+            nextGearConsumed = true;
+          }
         }
       } else if (prevStatus !== '' && status === '') {
         const keys = Object.keys(nextUsedGear);
@@ -1892,6 +1946,264 @@ export default function App() {
     if (groupId) setSelectedCatalogGroupId(groupId);
     setCurrentTab('catalog');
   }, []);
+
+  const handleConvertMissionPack = (
+    missionCode: string,
+    direction: 'assemble' | 'unpack'
+  ) => {
+    if (readonly || !authUser) return;
+    const blueprint = EMINENCE_MISSIONS.find((m) => m.code === missionCode);
+    if (!blueprint || !blueprint.packItemId) return;
+
+    const catalogMap = getEminenceCatalogItemsMap(catalogGroups);
+    const packCatItem = catalogMap.get(blueprint.packItemId);
+    const packStockKey = resolveCatalogItemStockKey(packCatItem);
+    if (!packStockKey) return;
+
+    const reqAgg = new Map<string, { stockKey: string; qty: number; name: string }>();
+    blueprint.requirements.forEach((req) => {
+      const catItem = catalogMap.get(req.itemId);
+      const sKey = resolveCatalogItemStockKey(catItem);
+      if (!catItem || !sKey || sKey === packStockKey) return;
+      const existing = reqAgg.get(sKey);
+      const addQty = Math.max(1, req.qty);
+      if (existing) existing.qty += addQty;
+      else reqAgg.set(sKey, { stockKey: sKey, qty: addQty, name: catItem.name });
+    });
+
+    const distinctReqs = Array.from(reqAgg.values());
+    if (distinctReqs.length === 0) return;
+
+    const nextStock = { ...inventoryStock };
+    const stockPatch: Record<string, number> = {};
+    const packQty = Math.max(0, Math.floor(Number(nextStock[packStockKey]) || 0));
+
+    if (direction === 'assemble') {
+      const canAssemble = distinctReqs.every(
+        (r) => Math.max(0, Math.floor(Number(nextStock[r.stockKey]) || 0)) >= r.qty
+      );
+      if (!canAssemble) {
+        showToast(`Items insuffisants pour assembler 1 pack ${blueprint.title}.`, {
+          variant: 'warning',
+        });
+        return;
+      }
+      distinctReqs.forEach((r) => {
+        const updated = Math.max(0, Math.floor(Number(nextStock[r.stockKey]) || 0) - r.qty);
+        nextStock[r.stockKey] = updated;
+        stockPatch[r.stockKey] = updated;
+      });
+      nextStock[packStockKey] = packQty + 1;
+      stockPatch[packStockKey] = packQty + 1;
+      setInventoryStock(nextStock);
+      void saveInventoryOrderReceipt(authUser.uid, stockPatch).catch((err) =>
+        setSyncError(err instanceof Error ? err : new Error(String(err)))
+      );
+      showToast(`📦 Pack ${blueprint.title} assemblé (+1 pack depuis les items en coffre).`);
+      return;
+    }
+
+    if (packQty <= 0) {
+      showToast(`Aucun pack ${blueprint.title} à dissocier.`, { variant: 'warning' });
+      return;
+    }
+
+    nextStock[packStockKey] = packQty - 1;
+    stockPatch[packStockKey] = packQty - 1;
+    distinctReqs.forEach((r) => {
+      const updated = Math.max(0, Math.floor(Number(nextStock[r.stockKey]) || 0) + r.qty);
+      nextStock[r.stockKey] = updated;
+      stockPatch[r.stockKey] = updated;
+    });
+    setInventoryStock(nextStock);
+    void saveInventoryOrderReceipt(authUser.uid, stockPatch).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+    showToast(
+      `🔓 Pack ${blueprint.title} dissocié en items seuls (${distinctReqs.map((r) => `${r.qty}× ${r.name}`).join(' + ')}).`
+    );
+  };
+
+  const handleAssembleAllPossiblePacks = () => {
+    if (readonly || !authUser) return;
+    const catalogMap = getEminenceCatalogItemsMap(catalogGroups);
+    const sim = simulateMissionSupplyPlan({
+      inventoryStock,
+      inventoryPrices,
+      catalogGroups,
+      missionStates,
+      scheduleMeta,
+    });
+
+    const pool: Record<string, number> = {};
+    Object.entries(inventoryStock).forEach(([k, v]) => {
+      pool[k] = Math.max(0, Math.floor(Number(v) || 0));
+    });
+    const stockPatch: Record<string, number> = {};
+    let totalAssembled = 0;
+    const assembledLabels: string[] = [];
+
+    // Prioritize missions with remaining weekly schedule needs first, then others
+    const prioritized = [...EMINENCE_MISSIONS].sort((a, b) => {
+      const aNeed = sim.overviewByCode[a.code]?.scheduledThisWeekCount || 0;
+      const bNeed = sim.overviewByCode[b.code]?.scheduledThisWeekCount || 0;
+      return bNeed - aNeed;
+    });
+
+    prioritized.forEach((blueprint) => {
+      if (!blueprint.packItemId) return;
+      const packCatItem = catalogMap.get(blueprint.packItemId);
+      const packStockKey = resolveCatalogItemStockKey(packCatItem);
+      if (!packStockKey) return;
+
+      const reqAgg = new Map<string, number>();
+      blueprint.requirements.forEach((req) => {
+        const catItem = catalogMap.get(req.itemId);
+        const sKey = resolveCatalogItemStockKey(catItem);
+        if (!catItem || !sKey || sKey === packStockKey) return;
+        reqAgg.set(sKey, (reqAgg.get(sKey) || 0) + Math.max(1, req.qty));
+      });
+      const distinctReqs = Array.from(reqAgg.entries());
+      if (distinctReqs.length === 0) return;
+
+      let assembledForMission = 0;
+      while (
+        distinctReqs.every(
+          ([sKey, qty]) => Math.max(0, pool[sKey] || 0) >= qty
+        )
+      ) {
+        distinctReqs.forEach(([sKey, qty]) => {
+          const updated = Math.max(0, (pool[sKey] || 0) - qty);
+          pool[sKey] = updated;
+          stockPatch[sKey] = updated;
+        });
+        const nextPack = Math.max(0, pool[packStockKey] || 0) + 1;
+        pool[packStockKey] = nextPack;
+        stockPatch[packStockKey] = nextPack;
+        assembledForMission++;
+        totalAssembled++;
+      }
+
+      if (assembledForMission > 0) {
+        assembledLabels.push(`${assembledForMission}× ${blueprint.title}`);
+      }
+    });
+
+    if (totalAssembled <= 0) {
+      showToast('Aucun kit complet d’items seuls disponible à assembler pour le moment.');
+      return;
+    }
+
+    setInventoryStock(pool);
+    void saveInventoryOrderReceipt(authUser.uid, stockPatch).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+    showToast(
+      `📦 ${totalAssembled} pack${totalAssembled > 1 ? 's' : ''} assemblé${totalAssembled > 1 ? 's' : ''} : ${assembledLabels.join(', ')}.`
+    );
+  };
+
+  const handleQuickBuyCatalogItems = (
+    catalogItemsQty: Record<string, number>,
+    debitAccount: 'none' | 'legal' | 'illegal' = 'illegal'
+  ) => {
+    if (readonly || !authUser) return;
+    const catalogMap = getEminenceCatalogItemsMap(catalogGroups);
+    const nextStock = { ...inventoryStock };
+    const stockPatch: Record<string, number> = {};
+    let totalUnits = 0;
+    let totalCost = 0;
+
+    Object.entries(catalogItemsQty).forEach(([itemId, rawQty]) => {
+      const addQty = Math.max(0, Math.floor(Number(rawQty) || 0));
+      if (addQty <= 0) return;
+      const catItem = catalogMap.get(itemId);
+      const stockKey = resolveCatalogItemStockKey(catItem);
+      if (!catItem || !stockKey) return;
+
+      const updated = Math.max(0, Math.floor(Number(nextStock[stockKey]) || 0)) + addQty;
+      nextStock[stockKey] = updated;
+      stockPatch[stockKey] = updated;
+      totalUnits += addQty;
+
+      const unitPrice = getInventoryItemPrice(stockKey, inventoryPrices, catItem.price);
+      totalCost += addQty * unitPrice;
+    });
+
+    if (totalUnits <= 0) return;
+    setInventoryStock(nextStock);
+
+    let treasuryPatch: Partial<TreasuryMoney> | undefined;
+    let insufficientShortfall = 0;
+    if (debitAccount !== 'none' && totalCost > 0) {
+      const current = Math.max(0, Number(treasuryMoney[debitAccount]) || 0);
+      if (current < totalCost) insufficientShortfall = totalCost - current;
+      const updatedBal = Math.max(0, current - totalCost);
+      treasuryPatch = { [debitAccount]: updatedBal };
+      setTreasuryMoney((prev) => ({ ...prev, [debitAccount]: updatedBal }));
+    }
+
+    void saveInventoryOrderReceipt(authUser.uid, stockPatch, treasuryPatch).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+
+    const debitLabel = debitAccount === 'legal' ? 'Argent Légal' : 'Argent Sale';
+    const debitMsg =
+      debitAccount !== 'none' && totalCost > 0
+        ? insufficientShortfall > 0
+          ? ` · ${debitLabel} à 0 $ (manquait ${formatMoney(insufficientShortfall)})`
+          : ` · -${formatMoney(totalCost)} ${debitLabel}`
+        : '';
+
+    showToast(
+      `⚡ +${totalUnits} article${totalUnits > 1 ? 's' : ''} ajouté${totalUnits > 1 ? 's' : ''} au coffre${debitMsg}`,
+      insufficientShortfall > 0 ? { variant: 'warning' } : undefined
+    );
+  };
+
+  const handleSendToEminenceCart = useCallback(
+    (
+      catalogItemsQty: Record<string, number>,
+      options?: { navigateToOrders?: boolean; replaceCart?: boolean }
+    ) => {
+      let totalAdded = 0;
+      const cleanAdditions: Record<string, number> = {};
+      Object.entries(catalogItemsQty).forEach(([itemId, rawQty]) => {
+        const qty = Math.max(0, Math.floor(Number(rawQty) || 0));
+        if (qty > 0) {
+          cleanAdditions[itemId] = qty;
+          totalAdded += qty;
+        }
+      });
+
+      if (totalAdded <= 0) {
+        showToast('Aucun article manquant à ajouter au panier Éminences.');
+        return;
+      }
+
+      setGroupOrderCarts((prev) => {
+        const baseCart = options?.replaceCart ? {} : { ...(prev.eminence || {}) };
+        Object.entries(cleanAdditions).forEach(([itemId, qty]) => {
+          baseCart[itemId] = (Number(baseCart[itemId]) || 0) + qty;
+        });
+        return { ...prev, eminence: baseCart };
+      });
+
+      setSelectedCatalogGroupId('eminence');
+      if (options?.navigateToOrders !== false) {
+        setCurrentTab('orders');
+        window.setTimeout(() => {
+          const el = document.getElementById('order-catalog-panel');
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 80);
+      }
+
+      showToast(
+        `🛒 ${totalAdded} article${totalAdded > 1 ? 's' : ''} envoyé${totalAdded > 1 ? 's' : ''} dans le panier Éminences !`
+      );
+    },
+    [showToast]
+  );
 
   const handleUpdateTreasuryMoney = (type: keyof TreasuryMoney, val: number) => {
     if (readonly || !authUser) return;
@@ -2683,6 +2995,7 @@ export default function App() {
             scheduleMeta={scheduleMeta}
             inventoryStock={inventoryStock}
             inventoryPrices={inventoryPrices}
+            catalogGroups={catalogGroups}
             members={hierMembers}
             readonly={readonly}
             onOpenMissionValidation={handleOpenMissionValidation}
@@ -2691,6 +3004,7 @@ export default function App() {
             onToggleAllWeek={handleToggleAllWeek}
             onRecalculateSchedule={handleRecalculateScheduleNow}
             onResetScheduleOverrides={handleResetScheduleOverrides}
+            onSendToEminenceCart={handleSendToEminenceCart}
           />
         )}
 
@@ -2709,6 +3023,10 @@ export default function App() {
             onUpdateStock={handleUpdateStock}
             onUpdateItemPrice={handleUpdateItemPrice}
             onResetStock={handleResetStock}
+            onConvertMissionPack={handleConvertMissionPack}
+            onAssembleAllPossiblePacks={handleAssembleAllPossiblePacks}
+            onQuickBuyCatalogItems={handleQuickBuyCatalogItems}
+            onSendToEminenceCart={handleSendToEminenceCart}
             onSaveWeapon={handleSaveWeapon}
             onUpdateWeaponQty={handleUpdateWeaponQty}
             onDeleteWeapon={handleDeleteWeapon}
@@ -2734,6 +3052,7 @@ export default function App() {
             onClearGroupOrder={handleClearGroupOrder}
             onConfirmGroupOrder={handleConfirmGroupOrder}
             onOpenCatalog={handleOpenCatalog}
+            onSendToEminenceCart={handleSendToEminenceCart}
             readonly={readonly}
             onReceiveOrder={handleReceiveOrder}
             onUpdateItemPrice={handleUpdateItemPrice}
@@ -2867,6 +3186,7 @@ export default function App() {
         }
         inventoryStock={inventoryStock}
         inventoryPrices={inventoryPrices}
+        catalogGroups={catalogGroups}
         weaponsStock={weaponsStock}
         rewardStocks={rewardStocks}
         treasuryMoney={treasuryMoney}

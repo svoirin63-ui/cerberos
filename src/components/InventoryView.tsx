@@ -39,13 +39,16 @@ import type {
 } from '@/src/types/cartel';
 import {
   calcRewardsTotalValue,
-  calcStockAutonomy,
   calcWeaponsTotalValue,
   formatMoney,
   getCatalogExtraInventoryItems,
   getInventoryItemPrice,
   getWeaponHolderName,
 } from '@/src/utils/finance';
+import {
+  type MissionSupplyOverview,
+  simulateMissionSupplyPlan,
+} from '@/src/utils/missionSupply';
 
 interface InventoryViewProps {
   inventoryStock: InventoryStock;
@@ -61,6 +64,16 @@ interface InventoryViewProps {
   onUpdateStock: (key: string, delta: number, deductIllegal?: boolean) => void;
   onUpdateItemPrice: (key: string, price: number) => void;
   onResetStock: () => void;
+  onConvertMissionPack: (missionCode: string, direction: 'assemble' | 'unpack') => void;
+  onAssembleAllPossiblePacks: () => void;
+  onQuickBuyCatalogItems: (
+    catalogItemsQty: Record<string, number>,
+    debitAccount?: 'none' | 'legal' | 'illegal'
+  ) => void;
+  onSendToEminenceCart: (
+    catalogItemsQty: Record<string, number>,
+    options?: { navigateToOrders?: boolean; replaceCart?: boolean }
+  ) => void;
   onSaveWeapon: (payload: {
     id?: string;
     name: string;
@@ -104,6 +117,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   onUpdateStock,
   onUpdateItemPrice,
   onResetStock,
+  onConvertMissionPack,
+  onAssembleAllPossiblePacks,
+  onQuickBuyCatalogItems,
+  onSendToEminenceCart,
   onSaveWeapon,
   onUpdateWeaponQty,
   onDeleteWeapon,
@@ -290,123 +307,26 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     0
   );
 
-  const autonomy = useMemo(
+  const supplyPlan = useMemo(
     () =>
-      calcStockAutonomy({
+      simulateMissionSupplyPlan({
         inventoryStock,
+        inventoryPrices,
+        catalogGroups,
         missionStates,
         scheduleMeta,
-        excludeDone: true,
       }),
-    [inventoryStock, missionStates, scheduleMeta]
+    [inventoryStock, inventoryPrices, catalogGroups, missionStates, scheduleMeta]
   );
 
-  const missionCardsData = useMemo(() => {
-    return EMINENCE_MISSIONS.map((mission) => {
-      const packCatalogItem = mission.packItemId
-        ? eminenceItemsById.get(mission.packItemId)
-        : undefined;
-      const packStockKey = resolveCatalogItemStockKey(packCatalogItem);
-      const packStaticInv = packStockKey
-        ? INVENTORY_ITEMS.find((i) => i.key === packStockKey)
-        : undefined;
-      const packQty = packStockKey
-        ? Math.max(0, Math.floor(Number(inventoryStock[packStockKey]) || 0))
-        : 0;
-      const packUnitPrice = packStockKey
-        ? getInventoryItemPrice(
-            packStockKey,
-            inventoryPrices,
-            packStaticInv?.price ?? packCatalogItem?.price ?? 0
-          )
-        : 0;
-      const packDisplayName =
-        packStaticInv?.name || packCatalogItem?.name || `Pack ${mission.code}`;
-
-      const resolvedReqs = mission.requirements
-        .map((req) => {
-          const catItem = eminenceItemsById.get(req.itemId);
-          const stockKey = resolveCatalogItemStockKey(catItem);
-          if (!catItem || !stockKey) return null;
-          const staticInv = INVENTORY_ITEMS.find((i) => i.key === stockKey);
-          const stockQty = Math.max(0, Math.floor(Number(inventoryStock[stockKey]) || 0));
-          const unitPrice = getInventoryItemPrice(
-            stockKey,
-            inventoryPrices,
-            staticInv?.price ?? catItem.price
-          );
-          return {
-            req,
-            catItem,
-            stockKey,
-            displayName: staticInv?.name || catItem.name,
-            stockQty,
-            unitPrice,
-          };
-        })
-        .filter((x): x is NonNullable<typeof x> => x !== null);
-
-      // Avoid double counting when the pack and single utility share the exact same key (e.g. 01 ATM, 02 Maison)
-      const distinctReqs = resolvedReqs.filter((r) => r.stockKey !== packStockKey);
-      const isSingleUnifiedKey =
-        Boolean(packStockKey) && (resolvedReqs.length === 0 || distinctReqs.length === 0);
-
-      let soloReadyRuns = 0;
-      const missingComponents: Array<{ name: string; missingQty: number; cost: number }> = [];
-      let hasAnyPartialReq = false;
-
-      if (!isSingleUnifiedKey && distinctReqs.length > 0) {
-        soloReadyRuns = Math.min(
-          ...distinctReqs.map((r) => Math.floor(r.stockQty / Math.max(1, r.req.qty)))
-        );
-        distinctReqs.forEach((r) => {
-          if (r.stockQty > 0) hasAnyPartialReq = true;
-          const missingQty = Math.max(0, r.req.qty - r.stockQty);
-          if (missingQty > 0) {
-            missingComponents.push({
-              name: missingQty > 1 ? `${missingQty}× ${r.displayName}` : r.displayName,
-              missingQty,
-              cost: missingQty * r.unitPrice,
-            });
-          }
-        });
-      }
-
-      const readyRuns = isSingleUnifiedKey ? packQty : packQty + soloReadyRuns;
-      const missingToCompleteOne = missingComponents.reduce((s, m) => s + m.cost, 0);
-      const isPartial = readyRuns === 0 && hasAnyPartialReq;
-
-      const autoKey =
-        mission.planningGearKey && mission.planningGearKey !== 'amu'
-          ? mission.planningGearKey
-          : undefined;
-      const autoInfo = autoKey ? autonomy.byKey[autoKey] : undefined;
-
-      return {
-        mission,
-        packStockKey,
-        packDisplayName,
-        packQty,
-        packUnitPrice,
-        resolvedReqs,
-        distinctReqs,
-        isSingleUnifiedKey,
-        soloReadyRuns,
-        readyRuns,
-        isPartial,
-        missingComponents,
-        missingToCompleteOne,
-        autoInfo,
-      };
-    });
-  }, [eminenceItemsById, inventoryStock, inventoryPrices, autonomy.byKey]);
+  const missionCardsData: MissionSupplyOverview[] = supplyPlan.missionsOverview;
 
   const readyMissionCount = useMemo(
-    () => missionCardsData.filter((m) => m.readyRuns > 0).length,
+    () => missionCardsData.filter((m) => m.totalReadyRuns > 0).length,
     [missionCardsData]
   );
   const missingMissionCount = useMemo(
-    () => missionCardsData.filter((m) => m.readyRuns === 0).length,
+    () => missionCardsData.filter((m) => m.totalReadyRuns === 0).length,
     [missionCardsData]
   );
 
@@ -418,13 +338,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
   const filteredMissionCards = useMemo(() => {
     return missionCardsData.filter((card) => {
-      if (missionFilter === 'ready' && card.readyRuns <= 0) return false;
-      if (missionFilter === 'missing' && card.readyRuns > 0) return false;
+      if (missionFilter === 'ready' && card.totalReadyRuns <= 0) return false;
+      if (missionFilter === 'missing' && card.totalReadyRuns > 0) return false;
       if (missionFilter === 'major' && !card.mission.major) return false;
       if (missionFilter === 'standard' && card.mission.major) return false;
 
       if (normalizedMissionQuery) {
-        const reqNames = card.resolvedReqs.map((r) => r.displayName).join(' ');
+        const reqNames = card.distinctReqs.map((r) => r.displayName).join(' ');
         const hay = `${card.mission.code} ${card.mission.title} ${card.mission.summary} ${card.packDisplayName} ${reqNames}`
           .toLowerCase()
           .normalize('NFD')
@@ -590,9 +510,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     onLoseWeaponGlobal(id);
   };
 
-  const globalAutonomyLabel = autonomy.allOver30Days
+  const globalAutonomyLabel = supplyPlan.allOver30Days
     ? '30+ jours'
-    : `${autonomy.minDaysCovered} jour${autonomy.minDaysCovered > 1 ? 's' : ''}`;
+    : `${supplyPlan.minDaysCovered} jour${supplyPlan.minDaysCovered > 1 ? 's' : ''}`;
 
   const parsedFormValue = Math.max(0, Number(weaponValue) || 0);
   const parsedFormQty = Math.max(1, Math.floor(Number(weaponQty) || 1));
@@ -710,44 +630,44 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           </div>
         </div>
 
-        {/* BARRE SYNTHÈSE AUTONOMIE DU STOCK (JOURS RESTANTS) */}
+        {/* BARRE SYNTHÈSE AUTONOMIE & SYNCHRO PLANNING */}
         <div
           className={`rounded-xl border p-4 space-y-3 ${
-            autonomy.minDaysCovered === 0
+            supplyPlan.minDaysCovered === 0
               ? 'bg-crimson-dark/25 border-crimson-light/55'
-              : autonomy.minDaysCovered < 3
+              : supplyPlan.minDaysCovered < 3
                 ? 'bg-gold/10 border-gold/50'
                 : 'bg-obsidian/80 border-emerald-500/40'
           }`}
         >
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
             <div className="flex items-start gap-3">
               <div
                 className={`w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 ${
-                  autonomy.minDaysCovered === 0
+                  supplyPlan.minDaysCovered === 0
                     ? 'bg-crimson/25 border-crimson-light/50 text-red-200'
-                    : autonomy.minDaysCovered < 3
+                    : supplyPlan.minDaysCovered < 3
                       ? 'bg-gold/15 border-gold/50 text-gold'
                       : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
                 }`}
               >
-                {autonomy.minDaysCovered === 0 ? (
+                {supplyPlan.minDaysCovered === 0 ? (
                   <AlertTriangle className="w-5 h-5" />
-                ) : autonomy.minDaysCovered < 3 ? (
+                ) : supplyPlan.minDaysCovered < 3 ? (
                   <Clock className="w-5 h-5" />
                 ) : (
                   <CheckCircle2 className="w-5 h-5" />
                 )}
               </div>
-              <div>
+              <div className="space-y-1">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-display text-sm font-bold text-white uppercase tracking-wide">
-                    Autonomie du stock (à partir de {autonomy.startDay}) :{' '}
+                  <span className="font-display text-sm font-bold text-white uppercase tracking-wide tabular-nums">
+                    Autonomie réelle (packs + items dès {supplyPlan.startDay}) :{' '}
                     <span
                       className={
-                        autonomy.minDaysCovered === 0
+                        supplyPlan.minDaysCovered === 0
                           ? 'text-crimson-light'
-                          : autonomy.minDaysCovered < 3
+                          : supplyPlan.minDaysCovered < 3
                             ? 'text-gold'
                             : 'text-emerald-300'
                       }
@@ -756,81 +676,121 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     </span>
                   </span>
                 </div>
-                <p className="text-xs text-zinc-300 mt-0.5">
-                  {autonomy.allOver30Days ? (
-                    'Tous les articles du planning couvrent plus de 30 jours d’opérations.'
-                  ) : autonomy.limitingItems.length > 0 ? (
+                <p className="text-xs text-zinc-300 tabular-nums">
+                  Planning semaine :{' '}
+                  <strong className="text-white">
+                    {supplyPlan.weekCoveredCount} / {supplyPlan.weekRemainingMissionsCount}
+                  </strong>{' '}
+                  missions couvertes
+                  {supplyPlan.craftablePacksTotal > 0 && (
                     <>
-                      Point limitant :{' '}
+                      {' · '}
+                      <span className="text-gold-light font-semibold">
+                        {supplyPlan.craftablePacksTotal} pack
+                        {supplyPlan.craftablePacksTotal > 1 ? 's' : ''} assemblable
+                        {supplyPlan.craftablePacksTotal > 1 ? 's' : ''}
+                      </span>
+                    </>
+                  )}
+                  {supplyPlan.allOver30Days ? (
+                    ' · Tous les créneaux couvrent plus de 30 jours.'
+                  ) : supplyPlan.limitingMissions.length > 0 ? (
+                    <>
+                      {' · '}Point limitant :{' '}
                       <strong className="text-gold-light">
-                        {autonomy.limitingItems
+                        {supplyPlan.limitingMissions
                           .slice(0, 3)
                           .map(
                             (li) =>
-                              `${li.name} (${li.coveredDays}j${li.ruptureDayName ? ` · manque ${li.ruptureDayName}` : ''})`
+                              `${li.title} (${li.coveredDays}j${li.ruptureDayName ? ` · manque ${li.ruptureDayName}` : ''})`
                           )
                           .join(' · ')}
-                        {autonomy.limitingItems.length > 3
-                          ? ` +${autonomy.limitingItems.length - 3} autres`
+                        {supplyPlan.limitingMissions.length > 3
+                          ? ` +${supplyPlan.limitingMissions.length - 3}`
                           : ''}
                       </strong>
                     </>
-                  ) : (
-                    'Calcul basé sur le calendrier hebdomadaire des missions restantes.'
-                  )}
+                  ) : null}
                 </p>
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setShowAutonomyBoard((v) => !v)}
-              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-obsidian hover:bg-charcoal text-gold-light border border-gold/45 transition cursor-pointer whitespace-nowrap shrink-0 self-start md:self-center"
-            >
-              {showAutonomyBoard
-                ? 'Masquer le détail des jours restants'
-                : '⏳ Voir l’autonomie détaillée (par article)'}
-            </button>
+            <div className="flex items-center gap-2 flex-wrap shrink-0">
+              {!readonly && supplyPlan.craftablePacksTotal > 0 && (
+                <button
+                  type="button"
+                  onClick={onAssembleAllPossiblePacks}
+                  className="px-3.5 py-2 rounded-xl text-xs font-bold bg-gold hover:bg-gold-light text-obsidian transition cursor-pointer whitespace-nowrap shrink-0 shadow"
+                  title="Transforme automatiquement vos kits complets d'items seuls en packs prêts"
+                >
+                  📦 Assembler packs ({supplyPlan.craftablePacksTotal})
+                </button>
+              )}
+              {supplyPlan.weekUncoveredCount > 0 &&
+                Object.keys(supplyPlan.weekMissingOptimalItems).length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onSendToEminenceCart(supplyPlan.weekMissingOptimalItems, {
+                        navigateToOrders: true,
+                      })
+                    }
+                    className="px-3.5 py-2 rounded-xl text-xs font-bold bg-crimson/25 hover:bg-crimson/40 text-red-100 border border-crimson-light/50 transition cursor-pointer whitespace-nowrap shrink-0 tabular-nums"
+                    title="Envoie les exacts items manquants de la semaine vers le panier Éminences"
+                  >
+                    🛒 Manquants semaine ({formatMoney(supplyPlan.weekMissingOptimalCost)})
+                  </button>
+                )}
+              <button
+                type="button"
+                onClick={() => setShowAutonomyBoard((v) => !v)}
+                className="px-3.5 py-2 rounded-xl text-xs font-bold bg-obsidian hover:bg-charcoal text-gold-light border border-gold/45 transition cursor-pointer whitespace-nowrap shrink-0"
+              >
+                {showAutonomyBoard
+                  ? 'Masquer le détail'
+                  : '⏳ Autonomie par mission'}
+              </button>
+            </div>
           </div>
 
           {showAutonomyBoard && (
             <div className="pt-3 border-t border-bronze/35 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-              {heistGearItems.map((item) => {
-                const info = autonomy.byKey[item.key];
-                const qty = inventoryStock[item.key] || 0;
-                const unscheduled = (info?.neededPerWeek || 0) === 0;
-                const days = info?.coveredDays ?? 0;
-                const over30 = info?.hasMoreThan30 ?? false;
+              {supplyPlan.missionsOverview.map((ov) => {
+                const unscheduled = ov.scheduledThisWeekCount === 0 && ov.hasMoreThan30;
                 return (
                   <div
-                    key={item.key}
+                    key={ov.mission.code}
                     className="bg-charcoal/90 border border-bronze/40 rounded-lg px-3 py-2 flex items-center justify-between gap-2 text-xs tabular-nums"
                   >
                     <div className="min-w-0">
-                      <div className="font-semibold text-white truncate">{item.name}</div>
+                      <div className="font-semibold text-white truncate">
+                        {ov.mission.code} · {ov.mission.title}
+                      </div>
                       <div className="text-[10px] text-zinc-400">
-                        Stock : <strong className="text-zinc-200">{qty}</strong>
-                        {!unscheduled && (
-                          <> · Besoin/sem : {info?.neededPerWeek}</>
-                        )}
+                        {ov.packQty} pack{ov.packQty > 1 ? 's' : ''}
+                        {!ov.isSingleUnifiedKey && ov.soloReadyRuns > 0
+                          ? ` + ${ov.soloReadyRuns} kit${ov.soloReadyRuns > 1 ? 's' : ''} seul${ov.soloReadyRuns > 1 ? 's' : ''}`
+                          : ''}
+                        {ov.scheduledThisWeekCount > 0 &&
+                          ` · Sem. : ${ov.scheduledCoveredThisWeek}/${ov.scheduledThisWeekCount}`}
                       </div>
                     </div>
                     <div className="text-right shrink-0 font-mono">
                       {unscheduled ? (
-                        <span className="text-zinc-400 text-[11px]">Hors planning</span>
-                      ) : over30 ? (
+                        <span className="text-zinc-400 text-[11px]">Libre</span>
+                      ) : ov.hasMoreThan30 ? (
                         <span className="text-emerald-300 font-bold">30+ jours</span>
-                      ) : days === 0 ? (
+                      ) : ov.coveredDays === 0 ? (
                         <span className="text-crimson-light font-bold">
-                          0 j ({info?.ruptureDayName})
+                          0 j ({ov.ruptureDayName})
                         </span>
                       ) : (
                         <span
                           className={`font-bold ${
-                            days < 3 ? 'text-amber-300' : 'text-emerald-300'
+                            ov.coveredDays < 3 ? 'text-amber-300' : 'text-emerald-300'
                           }`}
                         >
-                          {days} jour{days > 1 ? 's' : ''}
+                          {ov.coveredDays} jour{ov.coveredDays > 1 ? 's' : ''}
                         </span>
                       )}
                     </div>
@@ -1033,35 +993,49 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   const {
                     mission,
                     packStockKey,
+                    packItemId,
                     packDisplayName,
                     packQty,
-                    packUnitPrice,
+                    packPrice,
                     distinctReqs,
                     isSingleUnifiedKey,
+                    canAssembleOrUnpack,
                     soloReadyRuns,
-                    readyRuns,
+                    totalReadyRuns,
+                    soloFullPrice,
+                    packSavingsVsSolo,
                     isPartial,
                     missingComponents,
-                    missingToCompleteOne,
-                    autoInfo,
+                    missingCostToCompleteOne,
+                    scheduledThisWeekCount,
+                    scheduledThisWeekDays,
+                    scheduledCoveredThisWeek,
+                    scheduledMissingThisWeek,
+                    coveredDays,
+                    hasMoreThan30,
+                    ruptureDayName,
                   } = card;
 
-                  const unscheduled = !autoInfo || autoInfo.neededPerWeek === 0;
-                  const autoDays = autoInfo?.coveredDays ?? 0;
-                  const over30 = autoInfo?.hasMoreThan30 ?? false;
+                  const missingQtyMap: Record<string, number> = {};
+                  missingComponents.forEach((mc) => {
+                    missingQtyMap[mc.itemId] = mc.missingQty;
+                  });
+                  const hasMissingAction =
+                    missingComponents.length > 0 && missingCostToCompleteOne > 0;
+                  const unscheduledWeek = scheduledThisWeekCount === 0;
 
                   return (
                     <div
                       key={mission.code}
                       className={`bg-obsidian/85 border rounded-xl overflow-hidden flex flex-col justify-between shadow-md transition ${
-                        readyRuns > 0
+                        totalReadyRuns > 0
                           ? 'border-emerald-500/45'
                           : isPartial
                             ? 'border-amber-500/50'
                             : 'border-bronze/45'
                       }`}
                     >
-                      {/* EN-TÊTE MISSION + STATUT PRÊT / MANQUANT */}
+                      {/* EN-TÊTE MISSION + STATUT PRÊT / PLANNING */}
                       <div className="p-4 bg-charcoal/60 border-b border-bronze/30 flex items-start justify-between gap-3">
                         <div className="flex items-start gap-3 min-w-0">
                           <span
@@ -1087,14 +1061,37 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                               </span>
                             </div>
                             <p className="text-[11px] text-zinc-400 mt-0.5">{mission.summary}</p>
+                            <div className="text-[10px] font-mono mt-1 text-zinc-400 tabular-nums">
+                              {unscheduledWeek ? (
+                                <span>Hors planning restant cette semaine</span>
+                              ) : (
+                                <span>
+                                  Planning :{' '}
+                                  <strong className="text-zinc-200">
+                                    {scheduledThisWeekDays.join(', ')}
+                                  </strong>{' '}
+                                  ·{' '}
+                                  <strong
+                                    className={
+                                      scheduledMissingThisWeek === 0
+                                        ? 'text-emerald-300'
+                                        : 'text-amber-300'
+                                    }
+                                  >
+                                    {scheduledCoveredThisWeek}/{scheduledThisWeekCount} couverte
+                                    {scheduledThisWeekCount > 1 ? 's' : ''}
+                                  </strong>
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
 
                         <div className="text-right shrink-0 space-y-1 tabular-nums">
-                          {readyRuns > 0 ? (
+                          {totalReadyRuns > 0 ? (
                             <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[11px] font-bold">
                               <Check className="w-3 h-3" />
-                              {readyRuns} prête{readyRuns > 1 ? 's' : ''}
+                              {totalReadyRuns} prête{totalReadyRuns > 1 ? 's' : ''}
                             </div>
                           ) : isPartial ? (
                             <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/40 text-amber-300 text-[11px] font-bold">
@@ -1107,50 +1104,168 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                           )}
 
                           <div className="text-[10px] font-mono">
-                            {unscheduled ? (
-                              <span className="text-zinc-500">Hors planning</span>
-                            ) : over30 ? (
+                            {hasMoreThan30 ? (
                               <span className="text-emerald-300">Autonomie : 30+ j</span>
-                            ) : autoDays === 0 ? (
+                            ) : coveredDays === 0 ? (
                               <span className="text-crimson-light font-semibold">
-                                0 j · Manque {autoInfo?.ruptureDayName}
+                                0 j · Manque {ruptureDayName}
                               </span>
                             ) : (
-                              <span className={autoDays < 3 ? 'text-amber-300' : 'text-emerald-300'}>
-                                Autonomie : {autoDays} j
-                                {autoInfo?.ruptureDayName ? ` → ${autoInfo.ruptureDayName}` : ''}
+                              <span className={coveredDays < 3 ? 'text-amber-300' : 'text-emerald-300'}>
+                                Autonomie : {coveredDays} j
+                                {ruptureDayName ? ` → ${ruptureDayName}` : ''}
                               </span>
                             )}
                           </div>
                         </div>
                       </div>
 
-                      {/* STOCK DU PACK + STOCK DES ITEMS À L'UNITÉ */}
+                      {/* STOCK DU PACK + CONVERSION 1-CLIC + ITEMS À L'UNITÉ */}
                       <div className="p-4 space-y-3">
-                        {/* RÉCAP MIXTE SI PACK ET KITS SOLO */}
-                        {readyRuns > 0 && !isSingleUnifiedKey && distinctReqs.length > 0 && (
-                          <div className="text-[11px] font-mono text-emerald-300/90 bg-emerald-950/20 border border-emerald-500/25 rounded-lg px-3 py-1.5 flex items-center justify-between gap-2 flex-wrap tabular-nums">
-                            <span>Capacité en coffre :</span>
-                            <span>
-                              {packQty > 0 ? `${packQty} pack${packQty > 1 ? 's' : ''}` : ''}
-                              {packQty > 0 && soloReadyRuns > 0 ? ' + ' : ''}
-                              {soloReadyRuns > 0
-                                ? `${soloReadyRuns} kit${soloReadyRuns > 1 ? 's' : ''} complet${soloReadyRuns > 1 ? 's' : ''} en items seuls`
-                                : ''}
-                            </span>
+                        {/* RÉCAP MIXTE + BOUTONS ASSEMBLER / DISSOCIER */}
+                        {!isSingleUnifiedKey && distinctReqs.length > 0 && (
+                          <div className="bg-charcoal/70 border border-bronze/30 rounded-lg px-3 py-2 space-y-2 tabular-nums">
+                            <div className="flex items-center justify-between gap-2 flex-wrap text-[11px]">
+                              <span className="font-mono text-zinc-300">
+                                {totalReadyRuns > 0 ? (
+                                  <span className="text-emerald-300 font-semibold">
+                                    {packQty > 0 ? `${packQty} pack${packQty > 1 ? 's' : ''}` : ''}
+                                    {packQty > 0 && soloReadyRuns > 0 ? ' + ' : ''}
+                                    {soloReadyRuns > 0
+                                      ? `${soloReadyRuns} kit${soloReadyRuns > 1 ? 's' : ''} en items seuls`
+                                      : ''}
+                                  </span>
+                                ) : (
+                                  <span className="text-zinc-400">
+                                    {packPrice > 0
+                                      ? `Pack ${formatMoney(packPrice)} · Solo ${formatMoney(soloFullPrice)}`
+                                      : `Kit complet : ${formatMoney(soloFullPrice)}`}
+                                    {packSavingsVsSolo > 0 && (
+                                      <span className="text-emerald-300 font-semibold">
+                                        {' '}
+                                        (-{formatMoney(packSavingsVsSolo)} en pack)
+                                      </span>
+                                    )}
+                                  </span>
+                                )}
+                              </span>
+
+                              {!readonly && canAssembleOrUnpack && (
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  {soloReadyRuns > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        onConvertMissionPack(mission.code, 'assemble')
+                                      }
+                                      className="px-2.5 py-1 rounded-md text-[11px] font-bold bg-gold/20 hover:bg-gold hover:text-obsidian text-gold-light border border-gold/45 transition cursor-pointer whitespace-nowrap"
+                                      title="Assemble les items en coffre pour former +1 pack prêt (0 $)"
+                                    >
+                                      📦 Assembler pack
+                                    </button>
+                                  )}
+                                  {packQty > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        onConvertMissionPack(mission.code, 'unpack')
+                                      }
+                                      className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-obsidian hover:bg-gunmetal text-zinc-300 hover:text-white border border-bronze/45 transition cursor-pointer whitespace-nowrap"
+                                      title="Dissocie 1 pack en ses items individuels (0 $)"
+                                    >
+                                      🔓 Dissocier
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         )}
 
-                        {/* MANQUANTS SI PARTIEL */}
-                        {readyRuns === 0 && missingComponents.length > 0 && isPartial && (
-                          <div className="text-[11px] text-amber-200 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-1.5 flex items-center justify-between gap-2 flex-wrap tabular-nums">
-                            <span>
-                              Manque pour 1 kit :{' '}
-                              <strong>{missingComponents.map((m) => m.name).join(', ')}</strong>
+                        {/* MANQUANTS + RACCOURCIS COMPLÉTER / PANIER */}
+                        {totalReadyRuns === 0 && hasMissingAction && (
+                          <div className="text-[11px] bg-amber-500/10 border border-amber-500/35 rounded-lg px-3 py-2 flex items-center justify-between gap-2 flex-wrap tabular-nums">
+                            <div className="text-amber-100 min-w-0">
+                              <span className="text-amber-300 font-semibold">
+                                {isPartial ? 'Manque pour 1 kit : ' : 'À prévoir (solo) : '}
+                              </span>
+                              <strong>
+                                {missingComponents
+                                  .map((mc) =>
+                                    mc.missingQty > 1 ? `${mc.missingQty}× ${mc.name}` : mc.name
+                                  )
+                                  .join(', ')}
+                              </strong>{' '}
+                              <span className="font-mono font-bold text-gold-light">
+                                ({formatMoney(missingCostToCompleteOne)})
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {!readonly && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onQuickBuyCatalogItems(
+                                      missingQtyMap,
+                                      autoDebitGearIllegal ? 'illegal' : 'none'
+                                    )
+                                  }
+                                  className="px-2.5 py-1 rounded-md text-[11px] font-bold bg-emerald-500/20 hover:bg-emerald-500 hover:text-obsidian text-emerald-200 border border-emerald-500/45 transition cursor-pointer whitespace-nowrap"
+                                  title="Ajoute immédiatement les items manquants en coffre"
+                                >
+                                  ⚡ Compléter ({formatMoney(missingCostToCompleteOne)})
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onSendToEminenceCart(missingQtyMap, {
+                                    navigateToOrders: true,
+                                  })
+                                }
+                                className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-obsidian hover:bg-charcoal text-gold-light border border-gold/40 transition cursor-pointer whitespace-nowrap"
+                                title="Envoyer les manquants dans le panier Éminences"
+                              >
+                                🛒 Panier
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {totalReadyRuns === 0 && isSingleUnifiedKey && packItemId && (
+                          <div className="text-[11px] bg-crimson/15 border border-crimson-light/35 rounded-lg px-3 py-2 flex items-center justify-between gap-2 flex-wrap tabular-nums">
+                            <span className="text-red-200">
+                              Stock vide pour <strong>{packDisplayName}</strong>
                             </span>
-                            <span className="font-mono font-bold text-gold-light">
-                              {formatMoney(missingToCompleteOne)}
-                            </span>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {!readonly && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onQuickBuyCatalogItems(
+                                      { [packItemId]: 1 },
+                                      autoDebitGearIllegal ? 'illegal' : 'none'
+                                    )
+                                  }
+                                  className="px-2.5 py-1 rounded-md text-[11px] font-bold bg-emerald-500/20 hover:bg-emerald-500 hover:text-obsidian text-emerald-200 border border-emerald-500/45 transition cursor-pointer whitespace-nowrap"
+                                >
+                                  ⚡ +1 ({formatMoney(packPrice)})
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onSendToEminenceCart(
+                                    { [packItemId]: 1 },
+                                    { navigateToOrders: true }
+                                  )
+                                }
+                                className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-obsidian hover:bg-charcoal text-gold-light border border-gold/40 transition cursor-pointer whitespace-nowrap"
+                              >
+                                🛒 Panier
+                              </button>
+                            </div>
                           </div>
                         )}
 
@@ -1193,8 +1308,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                                     onUpdateStock(packStockKey, 1, autoDebitGearIllegal)
                                   }
                                   title={
-                                    autoDebitGearIllegal && packUnitPrice > 0
-                                      ? `Ajouter +1 et déduire ${formatMoney(packUnitPrice)} de l'Argent Sale`
+                                    autoDebitGearIllegal && packPrice > 0
+                                      ? `Ajouter +1 et déduire ${formatMoney(packPrice)} de l'Argent Sale`
                                       : 'Ajouter +1 au stock'
                                   }
                                   className="w-7 h-7 bg-gunmetal hover:bg-gold hover:text-obsidian disabled:opacity-40 text-white rounded-lg font-bold flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
@@ -1211,7 +1326,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                                   type="number"
                                   min="0"
                                   step="50"
-                                  value={packUnitPrice}
+                                  value={packPrice}
                                   disabled={readonly}
                                   onChange={(e) =>
                                     onUpdateItemPrice(
@@ -1239,8 +1354,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                             </div>
                             <div className="divide-y divide-bronze/20 border border-bronze/30 rounded-lg bg-charcoal/45">
                               {distinctReqs.map(
-                                ({ req, stockKey, displayName, stockQty, unitPrice }) => {
-                                  const ok = stockQty >= req.qty;
+                                ({ qty: reqQty, stockKey, displayName, stockQty, unitPrice }) => {
+                                  const ok = stockQty >= reqQty;
                                   return (
                                     <div
                                       key={`${mission.code}-${stockKey}`}
@@ -1249,7 +1364,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                                       <div className="min-w-0 flex-1">
                                         <div className="flex items-center gap-1.5 flex-wrap">
                                           <span className="font-mono text-[11px] font-bold text-gold-light">
-                                            {req.qty}&times;
+                                            {reqQty}&times;
                                           </span>
                                           <span className="font-semibold text-zinc-100 truncate">
                                             {displayName}
@@ -1266,7 +1381,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                                             }`}
                                           >
                                             Coffre : {stockQty}
-                                            {ok ? ' ✓' : ` / ${req.qty} requis`}
+                                            {ok ? ' ✓' : ` / ${reqQty} requis`}
                                           </span>
                                           <span className="text-zinc-500">·</span>
                                           <span className="font-mono text-zinc-400">
@@ -1370,16 +1485,17 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                       inventoryPrices,
                       entry.defaultPrice
                     );
-                    const auto = autonomy.byKey[entry.stockKey];
-                    const unscheduled = !auto || (auto.neededPerWeek || 0) === 0;
-                    const days = auto?.coveredDays ?? 0;
-                    const over30 = auto?.hasMoreThan30 ?? false;
+                    const ov = supplyPlan.overviewByGearKey[entry.stockKey];
+                    const unscheduled = !ov || (ov.scheduledThisWeekCount === 0 && ov.hasMoreThan30);
+                    const days = ov?.coveredDays ?? 0;
+                    const over30 = ov?.hasMoreThan30 ?? false;
+                    const totalRuns = ov?.totalReadyRuns ?? qty;
 
                     return (
                       <div
                         key={entry.stockKey}
                         className={`bg-obsidian/80 border ${
-                          qty > 0 ? 'border-emerald-500/40' : 'border-bronze/45'
+                          totalRuns > 0 ? 'border-emerald-500/40' : 'border-bronze/45'
                         } rounded-xl p-4 flex flex-col justify-between gap-3 shadow-md`}
                       >
                         <div className="flex items-start justify-between gap-2">
@@ -1398,22 +1514,26 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                           </div>
                           <span
                             className={`font-mono text-[11px] font-bold tabular-nums shrink-0 ${
-                              qty > 0 ? 'text-emerald-300' : 'text-crimson-light'
+                              totalRuns > 0 ? 'text-emerald-300' : 'text-crimson-light'
                             }`}
                           >
-                            {qty > 0 ? `Stock (${qty})` : 'Rupture'}
+                            {qty > 0
+                              ? `Stock (${qty})`
+                              : totalRuns > 0
+                                ? `${totalRuns} kit seul`
+                                : 'Rupture'}
                           </span>
                         </div>
 
                         <div className="bg-charcoal/85 border border-bronze/35 rounded-lg px-3 py-1.5 flex items-center justify-between gap-2 text-[11px] tabular-nums">
-                          <span className="text-zinc-400">Autonomie restante :</span>
+                          <span className="text-zinc-400">Autonomie réelle :</span>
                           {unscheduled ? (
                             <span className="font-mono text-zinc-400">Hors planning</span>
                           ) : over30 ? (
                             <span className="font-mono font-bold text-emerald-300">30+ jours</span>
                           ) : days === 0 ? (
                             <span className="font-mono font-bold text-crimson-light">
-                              0 jour · Manque {auto?.ruptureDayName}
+                              0 jour · Manque {ov?.ruptureDayName}
                             </span>
                           ) : (
                             <span
@@ -1422,7 +1542,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                               }`}
                             >
                               {days} jour{days > 1 ? 's' : ''}
-                              {auto?.ruptureDayName ? ` (→ ${auto.ruptureDayName})` : ''}
+                              {ov?.ruptureDayName ? ` (→ ${ov.ruptureDayName})` : ''}
                             </span>
                           )}
                         </div>

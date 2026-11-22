@@ -7,7 +7,13 @@ import {
   REGULATION_TABLE_ROWS,
   REWARD_ITEMS,
 } from '@/src/data/cartelData';
+import {
+  checkMissionStockAvailability,
+  getStockKeyDisplayName,
+} from '@/src/data/eminenceMissions';
+import { simulateMissionSupplyPlan } from '@/src/utils/missionSupply';
 import type {
+  CatalogGroupsMap,
   HierarchyMember,
   InventoryPrices,
   InventoryStock,
@@ -17,7 +23,6 @@ import type {
   MissionStates,
 } from '@/src/types/cartel';
 import {
-  checkStockAvailability,
   dayDate,
   displayWeekStart,
   fmtLong,
@@ -38,6 +43,7 @@ interface PlanningViewProps {
   scheduleMeta: MissionScheduleMeta;
   inventoryStock: InventoryStock;
   inventoryPrices?: InventoryPrices;
+  catalogGroups?: CatalogGroupsMap;
   members: HierarchyMember[];
   readonly: boolean;
   onOpenMissionValidation: (
@@ -50,6 +56,10 @@ interface PlanningViewProps {
   onToggleAllWeek: () => void;
   onRecalculateSchedule: () => void;
   onResetScheduleOverrides: () => void;
+  onSendToEminenceCart?: (
+    catalogItemsQty: Record<string, number>,
+    options?: { navigateToOrders?: boolean; replaceCart?: boolean }
+  ) => void;
 }
 
 export const PlanningView: React.FC<PlanningViewProps> = ({
@@ -57,6 +67,7 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
   scheduleMeta,
   inventoryStock,
   inventoryPrices,
+  catalogGroups,
   members,
   readonly,
   onOpenMissionValidation,
@@ -65,6 +76,7 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
   onToggleAllWeek,
   onRecalculateSchedule,
   onResetScheduleOverrides,
+  onSendToEminenceCart,
 }) => {
   const [activeFilter, setActiveFilter] = useState<string>('ALL');
   const [showRegulation, setShowRegulation] = useState<boolean>(false);
@@ -155,13 +167,13 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
       <div className="flex flex-wrap gap-1.5">
         {usedGearEntries.length > 0 ? (
           usedGearEntries.map(([gKey, qty]) => {
-            const gItem = INVENTORY_ITEMS.find((i) => i.key === gKey);
+            const gLabel = getStockKeyDisplayName(gKey, catalogGroups);
             return (
               <span
                 key={gKey}
                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30 tabular-nums"
               >
-                📦 -{qty} {gItem?.name || gKey}
+                📦 -{qty} {gLabel}
               </span>
             );
           })
@@ -206,6 +218,18 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
   const effectiveSchedule = useMemo(
     () => getEffectiveSchedule(missionStates, scheduleMeta),
     [missionStates, scheduleMeta]
+  );
+
+  const supplyPlan = useMemo(
+    () =>
+      simulateMissionSupplyPlan({
+        inventoryStock,
+        inventoryPrices,
+        catalogGroups,
+        missionStates,
+        scheduleMeta,
+      }),
+    [inventoryStock, inventoryPrices, catalogGroups, missionStates, scheduleMeta]
   );
 
   const hasScheduleAdjustments =
@@ -256,7 +280,24 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                       : 'Prix à définir'
                   })`
                 : m.gearName;
-            const hasStock = checkStockAvailability(m.gearKey, inventoryStock).available;
+            const alloc = supplyPlan.allocationsByMissionId[m.id];
+            const fallbackCheck = alloc
+              ? null
+              : checkMissionStockAvailability(m.gearKey, inventoryStock, catalogGroups);
+            const hasStock = alloc ? alloc.available : Boolean(fallbackCheck?.available);
+            const viaSoloOnly = alloc ? alloc.viaSoloOnly : Boolean(fallbackCheck?.viaSoloOnly);
+            const missingShortLabel =
+              !hasStock && alloc && alloc.missingItems.length > 0
+                ? alloc.missingItems
+                    .map((mi) => (mi.missingQty > 1 ? `${mi.missingQty}× ${mi.name}` : mi.name))
+                    .join(' + ')
+                : null;
+            const missingOrderMap: Record<string, number> = {};
+            if (alloc) {
+              alloc.missingItems.forEach((mi) => {
+                missingOrderMap[mi.itemId] = (missingOrderMap[mi.itemId] || 0) + mi.missingQty;
+              });
+            }
             const isTenMin = m.wait === '10 min';
             const rowClass = f.success
               ? 'bg-emerald-950/30 border-emerald-500/50'
@@ -311,8 +352,26 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                       ⏱️ {m.wait}
                     </span>
                     <span className={hasStock ? 'text-emerald-300' : 'text-red-300'}>
-                      {hasStock ? '✅ Matériel OK' : '⚠️ Stock insuffisant'}
+                      {hasStock
+                        ? viaSoloOnly
+                          ? '✅ Matériel OK (items seuls)'
+                          : '✅ Matériel OK'
+                        : missingShortLabel
+                          ? `⚠️ Manque ${missingShortLabel}${alloc && alloc.missingCost > 0 ? ` (${formatMoney(alloc.missingCost)})` : ''}`
+                          : '⚠️ Stock insuffisant'}
                     </span>
+                    {!f.done && !hasStock && Object.keys(missingOrderMap).length > 0 && onSendToEminenceCart && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onSendToEminenceCart(missingOrderMap, { navigateToOrders: true })
+                        }
+                        className="px-2 py-0.5 rounded bg-gold/15 hover:bg-gold hover:text-obsidian text-gold-light border border-gold/40 text-[10px] font-bold transition cursor-pointer whitespace-nowrap"
+                        title="Ajouter les items manquants au panier Éminences"
+                      >
+                        🛒 Commander
+                      </button>
+                    )}
                     <span className="text-zinc-500 truncate">{gearLabel}</span>
                   </div>
                 </div>
@@ -444,6 +503,33 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
           </div>
 
           <div className="flex items-center gap-1.5 flex-wrap">
+            {supplyPlan.weekRemainingMissionsCount > 0 && (
+              <span
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border tabular-nums ${
+                  supplyPlan.weekUncoveredCount === 0
+                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/35'
+                    : 'bg-amber-500/15 text-amber-200 border-amber-500/35'
+                }`}
+              >
+                📦 Stock sem. : {supplyPlan.weekCoveredCount}/{supplyPlan.weekRemainingMissionsCount}
+              </span>
+            )}
+            {supplyPlan.weekUncoveredCount > 0 &&
+              Object.keys(supplyPlan.weekMissingOptimalItems).length > 0 &&
+              onSendToEminenceCart && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onSendToEminenceCart(supplyPlan.weekMissingOptimalItems, {
+                      navigateToOrders: true,
+                    })
+                  }
+                  className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-crimson/25 hover:bg-crimson/40 text-red-100 border border-crimson-light/45 transition cursor-pointer whitespace-nowrap tabular-nums"
+                  title="Envoyer les manquants de la semaine au panier Éminences"
+                >
+                  🛒 Manquants ({formatMoney(supplyPlan.weekMissingOptimalCost)})
+                </button>
+              )}
             <button
               type="button"
               onClick={() => setShowRegulation((v) => !v)}
@@ -727,10 +813,35 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                               })`
                             : mission.gearName;
                         const isTenMin = mission.wait === '10 min';
-                        const hasStock = checkStockAvailability(
-                          mission.gearKey,
-                          inventoryStock
-                        ).available;
+                        const alloc = supplyPlan.allocationsByMissionId[mission.id];
+                        const fallbackCheck = alloc
+                          ? null
+                          : checkMissionStockAvailability(
+                              mission.gearKey,
+                              inventoryStock,
+                              catalogGroups
+                            );
+                        const hasStock = alloc
+                          ? alloc.available
+                          : Boolean(fallbackCheck?.available);
+                        const viaSoloOnly = alloc
+                          ? alloc.viaSoloOnly
+                          : Boolean(fallbackCheck?.viaSoloOnly);
+                        const missingShortLabel =
+                          !hasStock && alloc && alloc.missingItems.length > 0
+                            ? alloc.missingItems
+                                .map((mi) =>
+                                  mi.missingQty > 1 ? `${mi.missingQty}× ${mi.name}` : mi.name
+                                )
+                                .join(' + ')
+                            : null;
+                        const missingOrderMap: Record<string, number> = {};
+                        if (alloc) {
+                          alloc.missingItems.forEach((mi) => {
+                            missingOrderMap[mi.itemId] =
+                              (missingOrderMap[mi.itemId] || 0) + mi.missingQty;
+                          });
+                        }
 
                         const cardClass = f.success
                           ? 'bg-emerald-950/30 border-emerald-500/50'
@@ -807,8 +918,31 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                                     : 'bg-red-500/15 text-red-300 border-red-500/30'
                                 }`}
                               >
-                                {hasStock ? '✅ Matériel OK' : '⚠️ Stock insuffisant'}
+                                {hasStock
+                                  ? viaSoloOnly
+                                    ? '✅ Matériel OK (items seuls)'
+                                    : '✅ Matériel OK'
+                                  : missingShortLabel
+                                    ? `⚠️ Manque ${missingShortLabel}`
+                                    : '⚠️ Stock insuffisant'}
                               </span>
+                              {!f.done &&
+                                !hasStock &&
+                                Object.keys(missingOrderMap).length > 0 &&
+                                onSendToEminenceCart && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      onSendToEminenceCart(missingOrderMap, {
+                                        navigateToOrders: true,
+                                      })
+                                    }
+                                    className="px-2 py-0.5 rounded-md bg-gold/15 hover:bg-gold hover:text-obsidian text-gold-light border border-gold/40 text-[10px] font-bold transition cursor-pointer whitespace-nowrap"
+                                    title="Ajouter les manquants au panier Éminences"
+                                  >
+                                    🛒 Commander ({formatMoney(alloc?.missingCost || 0)})
+                                  </button>
+                                )}
                             </div>
                             <p className="text-[11px] text-zinc-400 mt-1.5 leading-snug">
                               <span className="text-zinc-500">Matériel :</span> {gearLabel}

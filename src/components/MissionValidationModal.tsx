@@ -7,6 +7,7 @@ import {
   resolveCatalogItemStockKey,
 } from '@/src/data/eminenceMissions';
 import type {
+  CatalogGroupsMap,
   HierarchyMember,
   InventoryPrices,
   InventoryStock,
@@ -46,6 +47,7 @@ interface MissionValidationModalProps {
   entry: MissionStateEntry;
   inventoryStock: InventoryStock;
   inventoryPrices?: InventoryPrices;
+  catalogGroups?: CatalogGroupsMap;
   weaponsStock: WeaponsStock;
   rewardStocks: RewardStocks;
   treasuryMoney: TreasuryMoney;
@@ -85,6 +87,7 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
   entry,
   inventoryStock,
   inventoryPrices,
+  catalogGroups,
   weaponsStock,
   rewardStocks,
   treasuryMoney,
@@ -122,7 +125,7 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
     const hasMissionGear =
       mission.gearKey !== 'none' && INVENTORY_ITEMS.some((i) => i.key === mission.gearKey);
     const blueprint = getEminenceMissionByGearKey(mission.gearKey);
-    const catalogMap = getEminenceCatalogItemsMap();
+    const catalogMap = getEminenceCatalogItemsMap(catalogGroups);
 
     if (Object.keys(prevUsed).length > 0) {
       setUsedGear(prevUsed);
@@ -188,7 +191,7 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
     setCashLoss(initialOtherLoss > 0 ? String(initialOtherLoss) : '');
     setTreasuryDebitAccount('none');
     setPlayers(Array.isArray(entry.players) ? [...entry.players] : []);
-  }, [open, mission, initialStatus, entry, inventoryStock, rewardStocks]);
+  }, [open, mission, initialStatus, entry, inventoryStock, rewardStocks, catalogGroups]);
 
   useEffect(() => {
     if (!open) return;
@@ -249,7 +252,7 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
   const prevUsedGear = getPreviousUsedGear(entry, mission);
   const gearItem = INVENTORY_ITEMS.find((i) => i.key === mission.gearKey);
 
-  const eminenceCatalogMap = getEminenceCatalogItemsMap();
+  const eminenceCatalogMap = getEminenceCatalogItemsMap(catalogGroups);
   const missionBlueprint = getEminenceMissionByGearKey(mission.gearKey);
   const missionComponentItems = (() => {
     if (!missionBlueprint) return [] as Array<{ key: string; name: string; category: string; reqQty: number }>;
@@ -303,7 +306,7 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
       )
       .map((k) => ({
         key: k,
-        name: getStockKeyDisplayName(k),
+        name: getStockKeyDisplayName(k, catalogGroups),
         category: 'tool',
       })),
   ];
