@@ -370,16 +370,16 @@
     },
     "HistoryState": {
       "title": "HistoryState",
-      "description": "Shared archived previous weeks and Sunday 70/30 cartel payroll state",
+      "description": "Shared archived previous weeks and Sunday cartel payroll state",
       "type": "object",
       "properties": {
         "archives": {
           "type": "object",
-          "description": "Bounded map (up to 60 entries) of archived global weekly activity summaries (operations, global wealth/treasury snapshot, notes, daily stats, mission logs, and Sunday 70/30 payroll records)"
+          "description": "Bounded map (up to 60 entries) of archived global weekly activity summaries (operations, global wealth/treasury snapshot, notes, daily stats, mission logs, and Sunday payroll records)"
         },
         "currentPayroll": {
           "type": "object",
-          "description": "Active week Sunday 70/30 payroll tracking state (basis, split, paid member IDs, settlement details)"
+          "description": "Active week Sunday payroll tracking state (basis, split, paid member IDs, settlement details)"
         },
         "updatedAt": {
           "type": "string",
@@ -438,7 +438,7 @@
     },
     "/cartels/{cartelId}/state/history": {
       "schema": { "$ref": "#/entities/HistoryState" },
-      "description": "Archived previous weeks and Sunday 70/30 payroll tracking"
+      "description": "Archived previous weeks and Sunday payroll tracking"
     },
     "/cartels/{cartelId}/albumMedia/{photoId}": {
       "schema": { "$ref": "#/entities/AlbumMedia" },
