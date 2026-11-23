@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Banknote } from 'lucide-react';
+import { Archive, Banknote } from 'lucide-react';
 import { HIER_UNITS, WEEKLY_SCHEDULE } from '@/src/data/cartelData';
 import type {
   CatalogGroupsMap,
@@ -34,6 +34,7 @@ interface AccountingViewProps {
   onUpdateWeaponsLoss: (val: number) => void;
   onLoseWeaponGlobal: (weaponId: string) => void;
   onOpenPayrollHistory?: () => void;
+  onOpenArchives?: () => void;
 }
 
 export const AccountingView: React.FC<AccountingViewProps> = ({
@@ -48,6 +49,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   onUpdateWeaponsLoss,
   onLoseWeaponGlobal,
   onOpenPayrollHistory,
+  onOpenArchives,
 }) => {
   const [selectedWeaponId, setSelectedWeaponId] = useState('');
   const stockedWeapons = useMemo(
@@ -160,7 +162,17 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
                 className="px-3.5 py-2 rounded-xl text-xs font-bold bg-gold/15 hover:bg-gold hover:text-obsidian text-gold-light border border-gold/45 transition inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
               >
                 <Banknote className="w-3.5 h-3.5" />
-                Paye du Dimanche (70/30) &amp; Archives
+                Paye du Dimanche
+              </button>
+            )}
+            {onOpenArchives && (
+              <button
+                type="button"
+                onClick={onOpenArchives}
+                className="px-3.5 py-2 rounded-xl text-xs font-bold bg-obsidian hover:bg-slateDark text-zinc-200 border border-zinc-700 hover:border-gold/50 transition inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <Archive className="w-3.5 h-3.5 text-gold" />
+                Archives &amp; Comparateur
               </button>
             )}
             <div className="text-right">

@@ -359,12 +359,31 @@ export interface WeeklyArchivePayrollSnapshot {
   rows: PayrollMemberRow[];
 }
 
+export interface WeeklyArchiveGlobalSnapshot {
+  treasuryLegal: number;
+  treasuryIllegal: number;
+  treasuryTotal: number;
+  rewardsValue: number;
+  rewardsCount: number;
+  inventoryValue: number;
+  weaponsValue: number;
+  weaponsCount: number;
+  totalWealth: number;
+  heistsOk: number;
+  heistsTotal: number;
+  activeMembersCount: number;
+  completionRate: number;
+  mvpName: string;
+  mvpPoints: number;
+}
+
 export interface WeeklyArchiveRecord {
   id: string;
   week: string;
   label: string;
   archivedAt: string;
   archivedBy: string;
+  notes?: string;
   summary: {
     successCount: number;
     failCount: number;
@@ -375,6 +394,7 @@ export interface WeeklyArchiveRecord {
     weaponsLossAmount: number;
     netProfit: number;
   };
+  globalSnapshot?: WeeklyArchiveGlobalSnapshot;
   dailyRows: WeeklyArchiveDayRow[];
   missions: WeeklyArchiveMissionRow[];
   payroll: WeeklyArchivePayrollSnapshot;
@@ -394,6 +414,7 @@ export type TabKey =
   | 'treasury'
   | 'accounting'
   | 'history'
+  | 'archives'
   | 'ranking'
   | 'hierarchy'
   | 'album';

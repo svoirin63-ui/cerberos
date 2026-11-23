@@ -484,12 +484,12 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
                 <div className="flex items-center justify-between gap-2 text-xs font-bold text-emerald-300">
                   <span className="inline-flex items-center gap-1.5">
                     <Banknote className="w-3.5 h-3.5" />
-                    Jour de Paye — Dimanche (70% / 30%)
+                    Jour de Paye — Dimanche
                   </span>
                   <span className="font-mono tabular-nums">Ouvrir →</span>
                 </div>
                 <p className="text-[11px] text-zinc-300 mt-0.5">
-                  Répartir 30% des bénéfices aux membres et archiver la semaine.
+                  Calculer la paye des membres selon leurs gains et archiver la semaine.
                 </p>
               </button>
             )}
@@ -727,14 +727,14 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
               onClick={() => onNavigateTab('history')}
               className="py-2 px-3 rounded-xl text-xs font-semibold bg-obsidian hover:bg-slateDark text-emerald-300 border border-emerald-500/35 hover:border-emerald-400 transition cursor-pointer whitespace-nowrap"
             >
-              Paye 70/30
+              Paye Dimanche
             </button>
             <button
               type="button"
-              onClick={() => onNavigateTab('accounting')}
-              className="py-2 px-3 rounded-xl text-xs font-semibold bg-obsidian hover:bg-slateDark text-zinc-200 border border-bronze/45 transition cursor-pointer"
+              onClick={() => onNavigateTab('archives')}
+              className="py-2 px-3 rounded-xl text-xs font-semibold bg-obsidian hover:bg-slateDark text-zinc-200 border border-bronze/45 hover:border-gold/50 transition cursor-pointer whitespace-nowrap"
             >
-              Compta
+              Archives
             </button>
           </div>
         </article>

@@ -59,6 +59,7 @@ import type {
   WeaponEntry,
   WeaponsStock,
   WeeklyArchiveDayRow,
+  WeeklyArchiveGlobalSnapshot,
   WeeklyArchiveMissionRow,
   WeeklyArchivePayrollSnapshot,
   WeeklyArchiveRecord,
@@ -707,6 +708,55 @@ export function sanitizeHistoryState(raw: unknown): HistoryState {
           rows: sanitizePayrollMemberRows(rawPay.rows),
         };
 
+        const cleanNotes =
+          typeof rec.notes === 'string' ? rec.notes.trim().slice(0, 500) : '';
+
+        let globalSnapshot: WeeklyArchiveGlobalSnapshot | undefined;
+        if (rec.globalSnapshot && typeof rec.globalSnapshot === 'object') {
+          const gs = rec.globalSnapshot as Record<string, unknown>;
+          const treasuryLegal = Math.max(0, Math.round(Number(gs.treasuryLegal) || 0));
+          const treasuryIllegal = Math.max(0, Math.round(Number(gs.treasuryIllegal) || 0));
+          const treasuryTotal = Math.max(
+            0,
+            Math.round(Number(gs.treasuryTotal) || treasuryLegal + treasuryIllegal)
+          );
+          const rewardsValue = Math.max(0, Math.round(Number(gs.rewardsValue) || 0));
+          const rewardsCount = Math.max(0, Math.floor(Number(gs.rewardsCount) || 0));
+          const inventoryValue = Math.max(0, Math.round(Number(gs.inventoryValue) || 0));
+          const weaponsValue = Math.max(0, Math.round(Number(gs.weaponsValue) || 0));
+          const weaponsCount = Math.max(0, Math.floor(Number(gs.weaponsCount) || 0));
+          const totalWealth = Math.max(
+            0,
+            Math.round(
+              Number(gs.totalWealth) ||
+                treasuryTotal + rewardsValue + inventoryValue + weaponsValue
+            )
+          );
+          globalSnapshot = {
+            treasuryLegal,
+            treasuryIllegal,
+            treasuryTotal,
+            rewardsValue,
+            rewardsCount,
+            inventoryValue,
+            weaponsValue,
+            weaponsCount,
+            totalWealth,
+            heistsOk: Math.max(0, Math.floor(Number(gs.heistsOk) || 0)),
+            heistsTotal: Math.max(0, Math.floor(Number(gs.heistsTotal) || 0)),
+            activeMembersCount: Math.max(0, Math.floor(Number(gs.activeMembersCount) || 0)),
+            completionRate: Math.max(
+              0,
+              Math.min(100, Math.round((Number(gs.completionRate) || 0) * 10) / 10)
+            ),
+            mvpName:
+              typeof gs.mvpName === 'string' && gs.mvpName.trim()
+                ? gs.mvpName.trim().slice(0, 80)
+                : '—',
+            mvpPoints: Math.max(0, Math.floor(Number(gs.mvpPoints) || 0)),
+          };
+        }
+
         archives[id] = {
           id,
           week,
@@ -716,6 +766,7 @@ export function sanitizeHistoryState(raw: unknown): HistoryState {
               ? rec.archivedAt.slice(0, 40)
               : new Date().toISOString().slice(0, 40),
           archivedBy: typeof rec.archivedBy === 'string' ? rec.archivedBy.slice(0, 80) : '',
+          ...(cleanNotes ? { notes: cleanNotes } : {}),
           summary: {
             successCount: Math.max(0, Math.floor(Number(sumObj.successCount) || 0)),
             failCount: Math.max(0, Math.floor(Number(sumObj.failCount) || 0)),
@@ -726,6 +777,7 @@ export function sanitizeHistoryState(raw: unknown): HistoryState {
             weaponsLossAmount: Math.max(0, Math.round(Number(sumObj.weaponsLossAmount) || 0)),
             netProfit: Math.round(Number(sumObj.netProfit) || 0),
           },
+          ...(globalSnapshot ? { globalSnapshot } : {}),
           dailyRows,
           missions,
           payroll,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
 import {
+  Archive,
   Banknote,
   BarChart3,
   BookOpen,
@@ -23,6 +24,7 @@ import {
 } from 'lucide-react';
 import { AccountingView } from '@/src/components/AccountingView';
 import { AlbumView } from '@/src/components/AlbumView';
+import { ArchivesView } from '@/src/components/ArchivesView';
 import { AuthModal } from '@/src/components/AuthModal';
 import { CatalogView } from '@/src/components/CatalogView';
 import { DashboardHomeView } from '@/src/components/DashboardHomeView';
@@ -2125,6 +2127,11 @@ export default function App() {
         inventoryPrices,
         catalogGroups,
         currentPayroll: historyState.currentPayroll,
+        treasuryMoney,
+        rewardStocks,
+        inventoryStock,
+        weaponsStock,
+        memberRankings,
       });
     }
 
@@ -2170,6 +2177,11 @@ export default function App() {
         inventoryPrices,
         catalogGroups,
         currentPayroll: historyState.currentPayroll,
+        treasuryMoney,
+        rewardStocks,
+        inventoryStock,
+        weaponsStock,
+        memberRankings,
       });
     }
 
@@ -3428,11 +3440,12 @@ export default function App() {
     );
   };
 
-  const handleArchiveCurrentWeek = () => {
+  const handleArchiveCurrentWeek = (notes?: string) => {
     if (readonly || !authUser) return;
     const currentWeekKey = missionStates.__week || isoDate(currentWeekStart());
     const archiveId = currentWeekKey.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) || 'week';
     const actorName = authUser.displayName || authUser.email?.split('@')[0] || 'Éditeur';
+    const existingNotes = historyState.archives[archiveId]?.notes || '';
     const record = buildArchiveRecordFromWeek({
       archiveId,
       archivedBy: actorName,
@@ -3443,6 +3456,12 @@ export default function App() {
       inventoryPrices,
       catalogGroups,
       currentPayroll: historyState.currentPayroll,
+      treasuryMoney,
+      rewardStocks,
+      inventoryStock,
+      weaponsStock,
+      memberRankings,
+      notes: notes !== undefined ? notes : existingNotes,
     });
     const nextHistory: HistoryState = {
       ...historyState,
@@ -3455,7 +3474,32 @@ export default function App() {
     void saveHistoryState(authUser.uid, nextHistory).catch((err) =>
       setSyncError(err instanceof Error ? err : new Error(String(err)))
     );
-    showToast(`Semaine ${record.label} archivée dans les Semaines Précédentes !`);
+    showToast(`Résumé global de la semaine ${record.label} enregistré dans les Archives !`);
+  };
+
+  const handleUpdateArchiveNotes = (archiveId: string, notes: string) => {
+    if (readonly || !authUser) return;
+    const rec = historyState.archives[archiveId];
+    if (!rec) return;
+    const cleanNotes = notes.trim().slice(0, 500);
+    const updatedRec = { ...rec };
+    if (cleanNotes) {
+      updatedRec.notes = cleanNotes;
+    } else {
+      delete updatedRec.notes;
+    }
+    const nextHistory: HistoryState = {
+      ...historyState,
+      archives: {
+        ...historyState.archives,
+        [archiveId]: updatedRec,
+      },
+    };
+    setHistoryState(nextHistory);
+    void saveHistoryState(authUser.uid, nextHistory).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+    showToast('Note d’activité enregistrée dans l’archive !');
   };
 
   const handleToggleArchivedMemberPaid = (archiveId: string, memberId: string) => {
@@ -3887,7 +3931,15 @@ export default function App() {
                 className={tabBtnClass('history')}
               >
                 <Banknote className="w-3.5 h-3.5" />
-                Paye &amp; Archives
+                Paye
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentTab('archives')}
+                className={tabBtnClass('archives')}
+              >
+                <Archive className="w-3.5 h-3.5" />
+                Archives
               </button>
               <button
                 type="button"
@@ -4236,6 +4288,7 @@ export default function App() {
             onUpdateWeaponsLoss={handleUpdateWeaponsLoss}
             onLoseWeaponGlobal={handleLoseWeaponGlobal}
             onOpenPayrollHistory={() => setCurrentTab('history')}
+            onOpenArchives={() => setCurrentTab('archives')}
           />
         )}
 
@@ -4253,11 +4306,38 @@ export default function App() {
             onUpdateCurrentPayroll={handleUpdateCurrentPayroll}
             onSettleSundayPayroll={handleSettleSundayPayroll}
             onCancelPayrollSettlement={handleCancelPayrollSettlement}
-            onArchiveCurrentWeek={handleArchiveCurrentWeek}
+            onArchiveCurrentWeek={() => handleArchiveCurrentWeek()}
             onToggleArchivedMemberPaid={handleToggleArchivedMemberPaid}
             onSettleArchivedPayroll={handleSettleArchivedPayroll}
             onCancelArchivedPayrollSettlement={handleCancelArchivedPayrollSettlement}
             onDeleteWeekArchive={handleDeleteWeekArchive}
+            onOpenArchivesPage={() => setCurrentTab('archives')}
+            onShowToast={(msg) => showToast(msg)}
+          />
+        )}
+
+        {currentTab === 'archives' && (
+          <ArchivesView
+            missionStates={missionStates}
+            scheduleMeta={scheduleMeta}
+            members={hierMembers}
+            memberRankings={memberRankings}
+            weaponsLossAmount={weaponsLossAmount}
+            inventoryStock={inventoryStock}
+            inventoryPrices={inventoryPrices}
+            weaponsStock={weaponsStock}
+            rewardStocks={rewardStocks}
+            catalogGroups={catalogGroups}
+            treasuryMoney={treasuryMoney}
+            historyState={historyState}
+            readonly={readonly}
+            onArchiveCurrentWeek={handleArchiveCurrentWeek}
+            onUpdateArchiveNotes={handleUpdateArchiveNotes}
+            onToggleArchivedMemberPaid={handleToggleArchivedMemberPaid}
+            onSettleArchivedPayroll={handleSettleArchivedPayroll}
+            onCancelArchivedPayrollSettlement={handleCancelArchivedPayrollSettlement}
+            onDeleteWeekArchive={handleDeleteWeekArchive}
+            onOpenPayrollTab={() => setCurrentTab('history')}
             onShowToast={(msg) => showToast(msg)}
           />
         )}

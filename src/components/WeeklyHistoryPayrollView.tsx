@@ -11,6 +11,7 @@ import {
   Info,
   RotateCcw,
   ShieldCheck,
+  SlidersHorizontal,
   Trash2,
   Wallet,
 } from 'lucide-react';
@@ -57,6 +58,7 @@ interface WeeklyHistoryPayrollViewProps {
   ) => void;
   onCancelArchivedPayrollSettlement: (archiveId: string) => void;
   onDeleteWeekArchive: (archiveId: string) => void;
+  onOpenArchivesPage?: () => void;
   onShowToast: (msg: string) => void;
 }
 
@@ -116,6 +118,7 @@ export const WeeklyHistoryPayrollView: React.FC<WeeklyHistoryPayrollViewProps> =
   onSettleArchivedPayroll,
   onCancelArchivedPayrollSettlement,
   onDeleteWeekArchive,
+  onOpenArchivesPage,
   onShowToast,
 }) => {
   const [subTab, setSubTab] = useState<'payroll' | 'archives'>('payroll');
@@ -126,6 +129,7 @@ export const WeeklyHistoryPayrollView: React.FC<WeeklyHistoryPayrollViewProps> =
   const [selectedArchiveId, setSelectedArchiveId] = useState<string>('');
   const [showArchiveMissions, setShowArchiveMissions] = useState(false);
   const [confirmDeleteArchiveId, setConfirmDeleteArchiveId] = useState<string | null>(null);
+  const [showSplitSettings, setShowSplitSettings] = useState(false);
 
   const isSundayToday = new Date().getDay() === 0;
   const activePayrollState = historyState.currentPayroll;
@@ -281,10 +285,10 @@ export const WeeklyHistoryPayrollView: React.FC<WeeklyHistoryPayrollViewProps> =
           </span>
           <h2 className="font-display text-xl sm:text-2xl font-extrabold text-white mt-0.5 flex items-center gap-2.5">
             <Banknote className="w-6 h-6 text-gold shrink-0" />
-            Paye du Dimanche (70% / 30%) &amp; Archives
+            Paye du Dimanche
           </h2>
           <p className="text-xs text-zinc-400 mt-1">
-            70% des bénéfices reviennent au coffre du cartel et les 30% restants sont répartis entre les membres selon les gains nets qu&apos;ils ont rapportés.
+            Calcul et versement hebdomadaire de la rémunération des membres selon les gains nets qu&apos;ils ont rapportés au cartel.
           </p>
         </div>
 
@@ -303,7 +307,13 @@ export const WeeklyHistoryPayrollView: React.FC<WeeklyHistoryPayrollViewProps> =
           </button>
           <button
             type="button"
-            onClick={() => setSubTab('archives')}
+            onClick={() => {
+              if (onOpenArchivesPage) {
+                onOpenArchivesPage();
+              } else {
+                setSubTab('archives');
+              }
+            }}
             className={`px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center gap-2 cursor-pointer whitespace-nowrap ${
               subTab === 'archives'
                 ? 'bg-gold text-obsidian shadow-md'
@@ -311,7 +321,7 @@ export const WeeklyHistoryPayrollView: React.FC<WeeklyHistoryPayrollViewProps> =
             }`}
           >
             <History className="w-3.5 h-3.5" />
-            Semaines Précédentes ({sortedArchives.length})
+            Archives &amp; Comparateur ({sortedArchives.length}) →
           </button>
         </div>
       </div>
@@ -319,7 +329,7 @@ export const WeeklyHistoryPayrollView: React.FC<WeeklyHistoryPayrollViewProps> =
       {/* ONGLET 1: PAYE DU DIMANCHE */}
       {subTab === 'payroll' && (
         <div className="space-y-5">
-          {/* Barre d'état & configuration 70/30 */}
+          {/* Barre d'état & paramètres discrets */}
           <div className="bg-charcoal/95 bronze-border rounded-2xl p-5 shadow-xl space-y-5">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pb-4 border-b border-zinc-800">
               <div>
@@ -343,12 +353,31 @@ export const WeeklyHistoryPayrollView: React.FC<WeeklyHistoryPayrollViewProps> =
                 </p>
               </div>
 
-              {/* Contrôle Répartition & Base de calcul */}
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-1.5 bg-obsidian/90 border border-zinc-800 rounded-xl p-1">
+              {/* Bouton paramètres discrets réservé aux éditeurs */}
+              {!readonly && (
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    disabled={readonly || isPayrollSettled}
+                    onClick={() => setShowSplitSettings((prev) => !prev)}
+                    className={`px-3 py-1.5 rounded-xl text-[11px] font-bold border transition inline-flex items-center gap-1.5 cursor-pointer ${
+                      showSplitSettings
+                        ? 'bg-obsidian text-gold-light border-gold/50'
+                        : 'bg-obsidian/80 hover:bg-obsidian text-zinc-300 border-zinc-800 hover:border-gold/40'
+                    }`}
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5 text-gold" />
+                    Paramètres de calcul
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {!readonly && showSplitSettings && (
+              <div className="rounded-xl bg-obsidian/85 border border-zinc-800 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-1.5 bg-zinc-950 border border-zinc-800 rounded-xl p-1">
+                  <button
+                    type="button"
+                    disabled={isPayrollSettled}
                     onClick={() => patchCurrentPayroll({ basis: 'net_cartel' })}
                     className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition cursor-pointer disabled:cursor-not-allowed ${
                       effectiveBasis === 'net_cartel'
@@ -360,7 +389,7 @@ export const WeeklyHistoryPayrollView: React.FC<WeeklyHistoryPayrollViewProps> =
                   </button>
                   <button
                     type="button"
-                    disabled={readonly || isPayrollSettled}
+                    disabled={isPayrollSettled}
                     onClick={() => patchCurrentPayroll({ basis: 'net_member' })}
                     className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition cursor-pointer disabled:cursor-not-allowed ${
                       effectiveBasis === 'net_member'
@@ -368,41 +397,41 @@ export const WeeklyHistoryPayrollView: React.FC<WeeklyHistoryPayrollViewProps> =
                         : 'text-zinc-400 hover:text-zinc-200'
                     }`}
                   >
-                    {100 - effectiveCartelPercent}% Direct / Membre
+                    Par Membre (Direct)
                   </button>
                 </div>
 
-                <div className="flex items-center gap-2 bg-obsidian/90 border border-zinc-800 rounded-xl px-3 py-1.5 text-xs">
+                <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-1.5">
                   <span className="text-zinc-400 font-semibold">Part Cartel</span>
                   <input
                     type="number"
                     min={0}
                     max={100}
                     step={5}
-                    disabled={readonly || isPayrollSettled}
+                    disabled={isPayrollSettled}
                     value={effectiveCartelPercent}
                     onChange={(e) =>
                       patchCurrentPayroll({ cartelPercent: Number(e.target.value) })
                     }
-                    className="w-12 bg-zinc-950 border border-zinc-700 focus:border-gold rounded-md px-1.5 py-0.5 text-center font-mono tabular-nums font-bold text-gold focus:outline-none disabled:opacity-60"
+                    className="w-12 bg-obsidian border border-zinc-700 focus:border-gold rounded-md px-1.5 py-0.5 text-center font-mono tabular-nums font-bold text-gold focus:outline-none disabled:opacity-60"
                   />
                   <span className="font-mono text-zinc-500">%</span>
                   <span className="text-zinc-600">/</span>
                   <span className="font-mono font-bold text-emerald-400 tabular-nums">
                     {100 - effectiveCartelPercent}% Paie
                   </span>
-                  {!readonly && !isPayrollSettled && effectiveCartelPercent !== 70 && (
+                  {!isPayrollSettled && effectiveCartelPercent !== 70 && (
                     <button
                       type="button"
                       onClick={() => patchCurrentPayroll({ cartelPercent: 70 })}
                       className="text-[11px] text-gold-light hover:text-gold underline ml-1 cursor-pointer"
                     >
-                      70/30
+                      Défaut
                     </button>
                   )}
                 </div>
               </div>
-            </div>
+            )}
 
             {/* 5 KPIs Synthèse Paye */}
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -421,7 +450,7 @@ export const WeeklyHistoryPayrollView: React.FC<WeeklyHistoryPayrollViewProps> =
 
               <div className="rounded-xl bg-obsidian/80 border border-gold/40 p-3.5">
                 <div className="text-[10px] uppercase tracking-wider text-gold-light font-semibold">
-                  Part Cartel ({payroll.cartelPercent}%)
+                  Part Cartel
                 </div>
                 <div
                   className={`font-display text-lg font-extrabold tabular-nums mt-1 ${
@@ -434,7 +463,7 @@ export const WeeklyHistoryPayrollView: React.FC<WeeklyHistoryPayrollViewProps> =
 
               <div className="rounded-xl bg-obsidian/80 border border-emerald-500/35 p-3.5">
                 <div className="text-[10px] uppercase tracking-wider text-emerald-300 font-semibold">
-                  Enveloppe Paie ({payroll.membersPercent}%)
+                  Enveloppe Paie
                 </div>
                 <div className="font-display text-lg font-extrabold text-emerald-400 tabular-nums mt-1">
                   {formatMoney(payroll.payrollPoolAmount)}
@@ -490,7 +519,7 @@ export const WeeklyHistoryPayrollView: React.FC<WeeklyHistoryPayrollViewProps> =
                       <strong className="text-zinc-200 tabular-nums">
                         {formatSigned(payroll.unattributedNet)}
                       </strong>{' '}
-                      (conservé à 100% pour le cartel)
+                      (conservé au coffre du cartel)
                     </span>
                   )}
                 </div>
@@ -507,10 +536,7 @@ export const WeeklyHistoryPayrollView: React.FC<WeeklyHistoryPayrollViewProps> =
                     <th className="py-3 px-3 text-right">Gains Bruts</th>
                     <th className="py-3 px-3 text-right">Matériel &amp; Pertes</th>
                     <th className="py-3 px-3 text-right">Net Rapporté</th>
-                    <th className="py-3 px-3 text-right">Part %</th>
-                    <th className="py-3 px-3 text-right text-emerald-400">
-                      Paie ({payroll.membersPercent}%)
-                    </th>
+                    <th className="py-3 px-3 text-right text-emerald-400">Paie</th>
                     <th className="py-3 px-3 text-right">Versement</th>
                   </tr>
                 </thead>
@@ -557,9 +583,6 @@ export const WeeklyHistoryPayrollView: React.FC<WeeklyHistoryPayrollViewProps> =
                           )}`}
                         >
                           {formatSigned(row.netContribution)}
-                        </td>
-                        <td className="py-3 px-3 text-right font-mono text-zinc-400">
-                          {row.sharePercent > 0 ? `${row.sharePercent.toFixed(1)}%` : '—'}
                         </td>
                         <td className="py-3 px-3 text-right font-display text-sm font-extrabold text-emerald-400">
                           {formatMoney(row.payrollAmount)}
@@ -1029,8 +1052,7 @@ export const WeeklyHistoryPayrollView: React.FC<WeeklyHistoryPayrollViewProps> =
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
                           <h4 className="font-display text-sm font-bold text-white">
-                            Paye du Dimanche ({activeArchive.payroll.cartelPercent}% Cartel /{' '}
-                            {activeArchive.payroll.membersPercent}% Membres)
+                            Paye du Dimanche
                           </h4>
                           <p className="text-[11px] text-zinc-400 tabular-nums">
                             Part Cartel :{' '}

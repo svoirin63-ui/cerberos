@@ -375,7 +375,7 @@
       "properties": {
         "archives": {
           "type": "object",
-          "description": "Bounded map (up to 60 entries) of archived past weekly summaries, daily stats, mission logs, and Sunday payroll records"
+          "description": "Bounded map (up to 60 entries) of archived global weekly activity summaries (operations, global wealth/treasury snapshot, notes, daily stats, mission logs, and Sunday 70/30 payroll records)"
         },
         "currentPayroll": {
           "type": "object",

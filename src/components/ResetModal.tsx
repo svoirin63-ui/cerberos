@@ -69,7 +69,7 @@ export const ResetModal: React.FC<ResetModalProps> = ({
               Archiver cette semaine dans l&apos;historique avant réinitialisation
             </span>
             <span className="block text-[11px] text-zinc-400 mt-0.5">
-              Conserve le bilan comptable et le calcul de paye (70% / 30%) dans les Semaines Précédentes.
+              Conserve le bilan comptable et le calcul de paye dans les Archives.
             </span>
           </span>
         </label>

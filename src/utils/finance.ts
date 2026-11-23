@@ -31,6 +31,7 @@ import type {
   TreasuryMoney,
   WeaponsStock,
   WeeklyArchiveDayRow,
+  WeeklyArchiveGlobalSnapshot,
   WeeklyArchiveMissionRow,
   WeeklyArchiveRecord,
 } from '@/src/types/cartel';
@@ -1205,6 +1206,12 @@ export function buildArchiveRecordFromWeek(params: {
   inventoryPrices?: InventoryPrices;
   catalogGroups?: CatalogGroupsMap;
   currentPayroll?: CurrentWeekPayrollState;
+  treasuryMoney?: TreasuryMoney;
+  rewardStocks?: RewardStocks;
+  inventoryStock?: InventoryStock;
+  weaponsStock?: WeaponsStock;
+  memberRankings?: MemberRankingsMap;
+  notes?: string;
 }): WeeklyArchiveRecord {
   const {
     archiveId,
@@ -1216,6 +1223,12 @@ export function buildArchiveRecordFromWeek(params: {
     inventoryPrices,
     catalogGroups,
     currentPayroll,
+    treasuryMoney = { legal: 0, illegal: 0 },
+    rewardStocks = {},
+    inventoryStock = {},
+    weaponsStock = {},
+    memberRankings = {},
+    notes = '',
   } = params;
 
   const week =
@@ -1232,6 +1245,8 @@ export function buildArchiveRecordFromWeek(params: {
   let successCount = 0;
   let failCount = 0;
   let totalMissions = 0;
+  let heistsOk = 0;
+  let heistsTotal = 0;
   let grossGains = 0;
   let materialCost = 0;
   let missionLoss = 0;
@@ -1244,8 +1259,12 @@ export function buildArchiveRecordFromWeek(params: {
     let gains = 0;
     dayObj.missions.forEach((m) => {
       totalMissions++;
+      if (m.major) heistsTotal++;
       const f = missionFin(m, missionStates, inventoryPrices, catalogGroups);
-      if (f.success) ok++;
+      if (f.success) {
+        ok++;
+        if (m.major) heistsOk++;
+      }
       if (f.fail) ko++;
       cost += f.cost;
       extra += f.extra;
@@ -1305,12 +1324,68 @@ export function buildArchiveRecordFromWeek(params: {
     paidMemberIds: isSameWeekPayroll ? currentPayroll?.paidMemberIds ?? [] : [],
   });
 
+  const treasuryLegal = Math.max(0, Math.round(Number(treasuryMoney.legal) || 0));
+  const treasuryIllegal = Math.max(0, Math.round(Number(treasuryMoney.illegal) || 0));
+  const treasuryTotal = treasuryLegal + treasuryIllegal;
+  const rewardsValue = calcRewardsTotalValue(rewardStocks);
+  const rewardsCount = REWARD_ITEMS.reduce(
+    (sum, item) => sum + Math.max(0, Math.floor(Number(rewardStocks[item.key]?.qty) || 0)),
+    0
+  );
+  const inventoryValue = calcInventoryTotalValue(inventoryStock, inventoryPrices, catalogGroups);
+  const weaponsValue = calcWeaponsTotalValue(weaponsStock);
+  const weaponsCount = Object.values(weaponsStock).reduce(
+    (sum, w) => sum + (w && typeof w === 'object' ? Math.max(0, Math.floor(Number(w.qty) || 0)) : 0),
+    0
+  );
+  const totalWealth = treasuryTotal + rewardsValue + inventoryValue + weaponsValue;
+  const activeMembersCount = payrollCalc.rows.filter(
+    (r) => r.missionsOk + r.missionsKo > 0
+  ).length;
+  const completionRate =
+    totalMissions > 0
+      ? Math.round(((successCount + failCount) / totalMissions) * 1000) / 10
+      : 0;
+
+  const leaderboard = computeMemberLeaderboard({
+    members,
+    missionStates,
+    weaponsStock,
+    memberRankings,
+    inventoryPrices,
+    catalogGroups,
+  });
+  const topLeader = leaderboard[0];
+  const mvpName = topLeader && topLeader.totalPoints > 0 ? topLeader.member.name : '—';
+  const mvpPoints = topLeader && topLeader.totalPoints > 0 ? topLeader.totalPoints : 0;
+
+  const globalSnapshot: WeeklyArchiveGlobalSnapshot = {
+    treasuryLegal,
+    treasuryIllegal,
+    treasuryTotal,
+    rewardsValue,
+    rewardsCount,
+    inventoryValue,
+    weaponsValue,
+    weaponsCount,
+    totalWealth,
+    heistsOk,
+    heistsTotal,
+    activeMembersCount,
+    completionRate,
+    mvpName,
+    mvpPoints,
+  };
+
+  const cleanNotes = typeof notes === 'string' ? notes.trim().slice(0, 500) : '';
+
   return {
     id: archiveId,
     week,
     label: weekRangeText(missionStates),
     archivedAt: new Date().toISOString().slice(0, 40),
     archivedBy: archivedBy.slice(0, 80),
+    ...(cleanNotes ? { notes: cleanNotes } : {}),
     summary: {
       successCount,
       failCount,
@@ -1321,6 +1396,7 @@ export function buildArchiveRecordFromWeek(params: {
       weaponsLossAmount: cleanWeaponsLoss,
       netProfit,
     },
+    globalSnapshot,
     dailyRows,
     missions,
     payroll: {
@@ -1353,8 +1429,6 @@ export function buildDiscordPayrollReport(params: {
 }): string {
   const {
     weekLabel,
-    cartelPercent,
-    membersPercent,
     netWeekProfit,
     cartelShareAmount,
     payrollPoolAmount,
@@ -1365,13 +1439,13 @@ export function buildDiscordPayrollReport(params: {
   let text = '```asciidoc\n';
   text += '= PAYE DU DIMANCHE LOS CERBEROS =\n';
   text += `Semaine ${weekLabel}\n`;
-  text += `Répartition : ${cartelPercent}% Cartel / ${membersPercent}% Paie membres\n`;
+  text += `Base        : Selon les gains nets rapportés\n`;
   if (settled) {
     text += `Statut      : PAYE VALIDÉE\n`;
   }
   text += `\nBénéfice Net Semaine  : ${formatSigned(netWeekProfit)}\n`;
-  text += `Part Cartel (${cartelPercent}%)     : ${formatMoney(Math.max(0, cartelShareAmount))}\n`;
-  text += `Enveloppe Paie (${membersPercent}%)  : ${formatMoney(payrollPoolAmount)}\n`;
+  text += `Part Cartel           : ${formatMoney(Math.max(0, cartelShareAmount))}\n`;
+  text += `Enveloppe Paie        : ${formatMoney(payrollPoolAmount)}\n`;
   text += `---------------------------------------------\n`;
 
   const activeRows = rows.filter((r) => r.payrollAmount > 0 || r.missionsOk + r.missionsKo > 0);
@@ -1390,9 +1464,27 @@ export function buildDiscordPayrollReport(params: {
 }
 
 export function buildArchivedWeekDiscordReport(archive: WeeklyArchiveRecord): string {
+  const gs = archive.globalSnapshot;
+  const doneCount = archive.summary.successCount + archive.summary.failCount;
+  const successRate =
+    doneCount > 0 ? Math.round((archive.summary.successCount / doneCount) * 100) : 0;
+
   let text = '```asciidoc\n';
-  text += '= ARCHIVE BILAN & PAYE LOS CERBEROS =\n';
-  text += `Semaine ${archive.label}\n\n`;
+  text += '= ARCHIVE GLOBALE & PAYE LOS CERBEROS =\n';
+  text += `Semaine ${archive.label}\n`;
+  if (archive.notes) {
+    text += `Note    : ${archive.notes}\n`;
+  }
+  text += '\n';
+
+  if (gs) {
+    text += `Patrimoine Global   : ${formatMoney(gs.totalWealth)} (Cash ${formatMoney(gs.treasuryTotal)} | Recel ${formatMoney(gs.rewardsValue)} | Stock ${formatMoney(gs.inventoryValue)} | Arsenal ${formatMoney(gs.weaponsValue)})\n`;
+    text += `Gros Coups Réussis  : ${gs.heistsOk} / ${gs.heistsTotal} | Membres actifs : ${gs.activeMembersCount}\n`;
+    if (gs.mvpName && gs.mvpName !== '—') {
+      text += `MVP de la Semaine   : ${gs.mvpName} (${gs.mvpPoints} pts)\n`;
+    }
+    text += `---------------------------------------------\n`;
+  }
 
   archive.dailyRows.forEach((d) => {
     text += `[ ${d.day} ] : ${d.ok} réussies / ${d.ko} échouées | Mat.: ${formatMoney(d.cost)} | Pertes: ${formatMoney(d.extra)} | Gains: ${formatMoney(d.gains)} | Net: ${formatSigned(d.net)}\n`;
@@ -1402,12 +1494,12 @@ export function buildArchivedWeekDiscordReport(archive: WeeklyArchiveRecord): st
     text += `\nPertes globales armes : -${formatMoney(archive.summary.weaponsLossAmount)}\n`;
   }
   text += `---------------------------------------------\n`;
-  text += `Missions       : ${archive.summary.successCount} réussies / ${archive.summary.failCount} échouées\n`;
+  text += `Missions       : ${archive.summary.successCount} réussies / ${archive.summary.failCount} échouées (${successRate}% réussite)\n`;
   text += `Gains bruts    : ${formatMoney(archive.summary.grossGains)}\n`;
   text += `Matériel + Pertes : -${formatMoney(archive.summary.materialCost + archive.summary.missionLoss + archive.summary.weaponsLossAmount)}\n`;
   text += `BÉNÉFICE NET   : ${formatSigned(archive.summary.netProfit)}\n`;
-  text += `Part Cartel (${archive.payroll.cartelPercent}%) : ${formatMoney(Math.max(0, archive.payroll.cartelShareAmount))}\n`;
-  text += `Enveloppe Paie (${archive.payroll.membersPercent}%) : ${formatMoney(archive.payroll.payrollPoolAmount)}\n`;
+  text += `Part Cartel    : ${formatMoney(Math.max(0, archive.payroll.cartelShareAmount))}\n`;
+  text += `Enveloppe Paie : ${formatMoney(archive.payroll.payrollPoolAmount)}\n`;
 
   const paidRows = archive.payroll.rows.filter((r) => r.payrollAmount > 0);
   if (paidRows.length > 0) {
@@ -1419,4 +1511,359 @@ export function buildArchivedWeekDiscordReport(archive: WeeklyArchiveRecord): st
 
   text += '```';
   return text;
+}
+
+export function getArchiveHeistsStats(archive: WeeklyArchiveRecord): {
+  heistsOk: number;
+  heistsTotal: number;
+} {
+  if (archive.globalSnapshot) {
+    return {
+      heistsOk: archive.globalSnapshot.heistsOk,
+      heistsTotal: archive.globalSnapshot.heistsTotal,
+    };
+  }
+  const heistsOk = archive.missions.filter((m) => m.major && m.status === 'success').length;
+  const heistsTotal = archive.missions.filter((m) => m.major).length;
+  return { heistsOk, heistsTotal };
+}
+
+export function getArchiveSuccessRate(archive: WeeklyArchiveRecord): number {
+  const done = archive.summary.successCount + archive.summary.failCount;
+  if (done <= 0) return 0;
+  return Math.round((archive.summary.successCount / done) * 1000) / 10;
+}
+
+export function getArchiveActiveMembersCount(archive: WeeklyArchiveRecord): number {
+  if (archive.globalSnapshot) {
+    return archive.globalSnapshot.activeMembersCount;
+  }
+  return archive.payroll.rows.filter((r) => r.missionsOk + r.missionsKo > 0).length;
+}
+
+export function buildLiveWeekAsArchivePreview(params: {
+  missionStates: MissionStates;
+  scheduleMeta?: MissionScheduleMeta;
+  weaponsLossAmount: number;
+  members: HierarchyMember[];
+  inventoryPrices?: InventoryPrices;
+  catalogGroups?: CatalogGroupsMap;
+  currentPayroll?: CurrentWeekPayrollState;
+  treasuryMoney?: TreasuryMoney;
+  rewardStocks?: RewardStocks;
+  inventoryStock?: InventoryStock;
+  weaponsStock?: WeaponsStock;
+  memberRankings?: MemberRankingsMap;
+}): WeeklyArchiveRecord {
+  const rec = buildArchiveRecordFromWeek({
+    archiveId: '__live__',
+    archivedBy: 'En direct',
+    ...params,
+  });
+  return {
+    ...rec,
+    label: `${rec.label} (En cours)`,
+  };
+}
+
+export interface ArchiveMetricDelta {
+  a: number;
+  b: number;
+  delta: number;
+  percentChange: number | null;
+}
+
+export interface ArchiveDayComparisonRow {
+  day: string;
+  okA: number;
+  okB: number;
+  koA: number;
+  koB: number;
+  gainsA: number;
+  gainsB: number;
+  costA: number;
+  costB: number;
+  netA: number;
+  netB: number;
+  netDelta: number;
+}
+
+export interface ArchiveMemberComparisonRow {
+  memberId: string;
+  memberName: string;
+  missionsOkA: number;
+  missionsKoA: number;
+  missionsOkB: number;
+  missionsKoB: number;
+  netA: number;
+  netB: number;
+  netDelta: number;
+  payrollA: number;
+  payrollB: number;
+  payrollDelta: number;
+}
+
+export interface WeeklyArchiveComparison {
+  netProfit: ArchiveMetricDelta;
+  grossGains: ArchiveMetricDelta;
+  materialCost: ArchiveMetricDelta;
+  totalLosses: ArchiveMetricDelta;
+  successCount: ArchiveMetricDelta;
+  failCount: ArchiveMetricDelta;
+  successRate: ArchiveMetricDelta;
+  heistsOk: ArchiveMetricDelta;
+  cartelShare: ArchiveMetricDelta;
+  payrollPool: ArchiveMetricDelta;
+  activeMembers: ArchiveMetricDelta;
+  hasBothSnapshots: boolean;
+  totalWealth: ArchiveMetricDelta;
+  treasuryTotal: ArchiveMetricDelta;
+  dayComparisons: ArchiveDayComparisonRow[];
+  memberComparisons: ArchiveMemberComparisonRow[];
+}
+
+function makeDelta(a: number, b: number): ArchiveMetricDelta {
+  const delta = Math.round((b - a) * 10) / 10;
+  let percentChange: number | null = null;
+  if (a === 0 && b === 0) {
+    percentChange = 0;
+  } else if (a !== 0) {
+    percentChange = Math.round(((b - a) / Math.abs(a)) * 1000) / 10;
+  }
+  return { a, b, delta, percentChange };
+}
+
+export function compareWeeklyArchives(
+  weekA: WeeklyArchiveRecord,
+  weekB: WeeklyArchiveRecord
+): WeeklyArchiveComparison {
+  const totalLossesA =
+    weekA.summary.missionLoss + weekA.summary.weaponsLossAmount;
+  const totalLossesB =
+    weekB.summary.missionLoss + weekB.summary.weaponsLossAmount;
+
+  const heistsA = getArchiveHeistsStats(weekA).heistsOk;
+  const heistsB = getArchiveHeistsStats(weekB).heistsOk;
+  const rateA = getArchiveSuccessRate(weekA);
+  const rateB = getArchiveSuccessRate(weekB);
+  const activeA = getArchiveActiveMembersCount(weekA);
+  const activeB = getArchiveActiveMembersCount(weekB);
+
+  const hasBothSnapshots = Boolean(weekA.globalSnapshot && weekB.globalSnapshot);
+  const wealthA = weekA.globalSnapshot?.totalWealth ?? 0;
+  const wealthB = weekB.globalSnapshot?.totalWealth ?? 0;
+  const cashA = weekA.globalSnapshot?.treasuryTotal ?? 0;
+  const cashB = weekB.globalSnapshot?.treasuryTotal ?? 0;
+
+  const dayMapA = new Map(weekA.dailyRows.map((d) => [d.day, d]));
+  const dayMapB = new Map(weekB.dailyRows.map((d) => [d.day, d]));
+  const dayComparisons: ArchiveDayComparisonRow[] = DAY_NAMES.map((day) => {
+    const dA = dayMapA.get(day);
+    const dB = dayMapB.get(day);
+    const netA = dA?.net ?? 0;
+    const netB = dB?.net ?? 0;
+    return {
+      day,
+      okA: dA?.ok ?? 0,
+      okB: dB?.ok ?? 0,
+      koA: dA?.ko ?? 0,
+      koB: dB?.ko ?? 0,
+      gainsA: dA?.gains ?? 0,
+      gainsB: dB?.gains ?? 0,
+      costA: dA?.cost ?? 0,
+      costB: dB?.cost ?? 0,
+      netA,
+      netB,
+      netDelta: netB - netA,
+    };
+  });
+
+  const memberRowMapA = new Map(weekA.payroll.rows.map((r) => [r.memberId, r]));
+  const memberRowMapB = new Map(weekB.payroll.rows.map((r) => [r.memberId, r]));
+  const allMemberIds = new Set<string>([
+    ...memberRowMapA.keys(),
+    ...memberRowMapB.keys(),
+  ]);
+
+  const memberComparisons: ArchiveMemberComparisonRow[] = Array.from(allMemberIds)
+    .map((memberId) => {
+      const rA = memberRowMapA.get(memberId);
+      const rB = memberRowMapB.get(memberId);
+      const netA = rA?.netContribution ?? 0;
+      const netB = rB?.netContribution ?? 0;
+      const payrollA = rA?.payrollAmount ?? 0;
+      const payrollB = rB?.payrollAmount ?? 0;
+      return {
+        memberId,
+        memberName: rB?.memberName || rA?.memberName || 'Membre',
+        missionsOkA: rA?.missionsOk ?? 0,
+        missionsKoA: rA?.missionsKo ?? 0,
+        missionsOkB: rB?.missionsOk ?? 0,
+        missionsKoB: rB?.missionsKo ?? 0,
+        netA,
+        netB,
+        netDelta: netB - netA,
+        payrollA,
+        payrollB,
+        payrollDelta: payrollB - payrollA,
+      };
+    })
+    .filter(
+      (row) =>
+        row.missionsOkA + row.missionsKoA + row.missionsOkB + row.missionsKoB > 0 ||
+        row.payrollA > 0 ||
+        row.payrollB > 0 ||
+        row.netA !== 0 ||
+        row.netB !== 0
+    )
+    .sort(
+      (a, b) =>
+        Math.max(Math.abs(b.netB), Math.abs(b.netA), Math.abs(b.netDelta)) -
+          Math.max(Math.abs(a.netB), Math.abs(a.netA), Math.abs(a.netDelta)) ||
+        a.memberName.localeCompare(b.memberName, 'fr-FR')
+    );
+
+  return {
+    netProfit: makeDelta(weekA.summary.netProfit, weekB.summary.netProfit),
+    grossGains: makeDelta(weekA.summary.grossGains, weekB.summary.grossGains),
+    materialCost: makeDelta(weekA.summary.materialCost, weekB.summary.materialCost),
+    totalLosses: makeDelta(totalLossesA, totalLossesB),
+    successCount: makeDelta(weekA.summary.successCount, weekB.summary.successCount),
+    failCount: makeDelta(weekA.summary.failCount, weekB.summary.failCount),
+    successRate: makeDelta(rateA, rateB),
+    heistsOk: makeDelta(heistsA, heistsB),
+    cartelShare: makeDelta(
+      weekA.payroll.cartelShareAmount,
+      weekB.payroll.cartelShareAmount
+    ),
+    payrollPool: makeDelta(
+      weekA.payroll.payrollPoolAmount,
+      weekB.payroll.payrollPoolAmount
+    ),
+    activeMembers: makeDelta(activeA, activeB),
+    hasBothSnapshots,
+    totalWealth: makeDelta(wealthA, wealthB),
+    treasuryTotal: makeDelta(cashA, cashB),
+    dayComparisons,
+    memberComparisons,
+  };
+}
+
+export function buildArchiveComparisonDiscordReport(
+  weekA: WeeklyArchiveRecord,
+  weekB: WeeklyArchiveRecord,
+  comp: WeeklyArchiveComparison
+): string {
+  const fmtPct = (v: number | null) =>
+    v === null ? 'n/a' : `${v > 0 ? '+' : ''}${v.toFixed(1)}%`;
+
+  let text = '```asciidoc\n';
+  text += '= COMPARATIF HEBDOMADAIRE LOS CERBEROS =\n';
+  text += `Semaine A (Réf.) : ${weekA.label}\n`;
+  text += `Semaine B (Comp.): ${weekB.label}\n`;
+  text += `---------------------------------------------\n`;
+  text += `Bénéfice Net     : ${formatSigned(comp.netProfit.a)} -> ${formatSigned(comp.netProfit.b)} (Écart ${formatSigned(comp.netProfit.delta)} | ${fmtPct(comp.netProfit.percentChange)})\n`;
+  text += `Gains Bruts      : ${formatMoney(comp.grossGains.a)} -> ${formatMoney(comp.grossGains.b)} (Écart ${formatSigned(comp.grossGains.delta)})\n`;
+  text += `Matériel Utilisé : ${formatMoney(comp.materialCost.a)} -> ${formatMoney(comp.materialCost.b)} (Écart ${formatSigned(comp.materialCost.delta)})\n`;
+  text += `Pertes Totales   : ${formatMoney(comp.totalLosses.a)} -> ${formatMoney(comp.totalLosses.b)} (Écart ${formatSigned(comp.totalLosses.delta)})\n`;
+  text += `Missions OK/KO   : ${comp.successCount.a}/${comp.failCount.a} -> ${comp.successCount.b}/${comp.failCount.b} (Taux ${comp.successRate.a.toFixed(1)}% -> ${comp.successRate.b.toFixed(1)}%)\n`;
+  text += `Gros Coups OK    : ${comp.heistsOk.a} -> ${comp.heistsOk.b}\n`;
+  text += `Part Cartel      : ${formatSigned(comp.cartelShare.a)} -> ${formatSigned(comp.cartelShare.b)}\n`;
+  text += `Enveloppe Paie   : ${formatMoney(comp.payrollPool.a)} -> ${formatMoney(comp.payrollPool.b)}\n`;
+  if (comp.hasBothSnapshots) {
+    text += `Patrimoine Global: ${formatMoney(comp.totalWealth.a)} -> ${formatMoney(comp.totalWealth.b)} (Écart ${formatSigned(comp.totalWealth.delta)})\n`;
+  }
+  text += '```';
+  return text;
+}
+
+function escapeCsvCell(value: string | number): string {
+  const s = String(value);
+  if (s.includes(';') || s.includes('"') || s.includes('\n')) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+export function buildArchiveCsvContent(archives: WeeklyArchiveRecord[]): string {
+  const header = [
+    'Semaine',
+    'Libelle',
+    'ArchiveLe',
+    'ArchivePar',
+    'MissionsReussies',
+    'MissionsEchouees',
+    'TauxReussitePct',
+    'GrosCoupsOK',
+    'GainsBruts',
+    'Materiel',
+    'PertesMissions',
+    'PertesArmes',
+    'BeneficeNet',
+    'PartCartel',
+    'EnveloppePaie',
+    'PayeValidee',
+    'PatrimoineSnapshot',
+    'CashSnapshot',
+    'MVP',
+    'Note',
+  ];
+
+  const rows = archives.map((a) => {
+    const heists = getArchiveHeistsStats(a);
+    const rate = getArchiveSuccessRate(a);
+    return [
+      a.week,
+      a.label,
+      a.archivedAt,
+      a.archivedBy,
+      a.summary.successCount,
+      a.summary.failCount,
+      rate.toFixed(1),
+      heists.heistsOk,
+      a.summary.grossGains,
+      a.summary.materialCost,
+      a.summary.missionLoss,
+      a.summary.weaponsLossAmount,
+      a.summary.netProfit,
+      a.payroll.cartelShareAmount,
+      a.payroll.payrollPoolAmount,
+      a.payroll.settled ? 'Oui' : 'Non',
+      a.globalSnapshot ? a.globalSnapshot.totalWealth : '',
+      a.globalSnapshot ? a.globalSnapshot.treasuryTotal : '',
+      a.globalSnapshot?.mvpName || '',
+      a.notes || '',
+    ].map(escapeCsvCell);
+  });
+
+  return '\uFEFF' + [header.join(';'), ...rows.map((r) => r.join(';'))].join('\n');
+}
+
+export function buildComparisonCsvContent(
+  weekA: WeeklyArchiveRecord,
+  weekB: WeeklyArchiveRecord,
+  comp: WeeklyArchiveComparison
+): string {
+  const header = ['Indicateur', weekA.label, weekB.label, 'Ecart_B_moins_A', 'Variation_Pct'];
+  const lines: Array<Array<string | number>> = [
+    ['Benefice Net', comp.netProfit.a, comp.netProfit.b, comp.netProfit.delta, comp.netProfit.percentChange ?? ''],
+    ['Gains Bruts', comp.grossGains.a, comp.grossGains.b, comp.grossGains.delta, comp.grossGains.percentChange ?? ''],
+    ['Materiel Utilise', comp.materialCost.a, comp.materialCost.b, comp.materialCost.delta, comp.materialCost.percentChange ?? ''],
+    ['Pertes Totales', comp.totalLosses.a, comp.totalLosses.b, comp.totalLosses.delta, comp.totalLosses.percentChange ?? ''],
+    ['Missions Reussies', comp.successCount.a, comp.successCount.b, comp.successCount.delta, comp.successCount.percentChange ?? ''],
+    ['Missions Echouees', comp.failCount.a, comp.failCount.b, comp.failCount.delta, comp.failCount.percentChange ?? ''],
+    ['Taux de Reussite (%)', comp.successRate.a, comp.successRate.b, comp.successRate.delta, comp.successRate.percentChange ?? ''],
+    ['Gros Coups Reussis', comp.heistsOk.a, comp.heistsOk.b, comp.heistsOk.delta, comp.heistsOk.percentChange ?? ''],
+    ['Part Cartel', comp.cartelShare.a, comp.cartelShare.b, comp.cartelShare.delta, comp.cartelShare.percentChange ?? ''],
+    ['Enveloppe Paie', comp.payrollPool.a, comp.payrollPool.b, comp.payrollPool.delta, comp.payrollPool.percentChange ?? ''],
+  ];
+  if (comp.hasBothSnapshots) {
+    lines.push(['Patrimoine Global', comp.totalWealth.a, comp.totalWealth.b, comp.totalWealth.delta, comp.totalWealth.percentChange ?? '']);
+    lines.push(['Tresorerie Cash', comp.treasuryTotal.a, comp.treasuryTotal.b, comp.treasuryTotal.delta, comp.treasuryTotal.percentChange ?? '']);
+  }
+
+  return (
+    '\uFEFF' +
+    [header.join(';'), ...lines.map((row) => row.map(escapeCsvCell).join(';'))].join('\n')
+  );
 }
