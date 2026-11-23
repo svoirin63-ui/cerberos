@@ -194,35 +194,26 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   }, [allCatalogExtraItems]);
 
   const packsTypeEntries = useMemo<MissionGearEntry[]>(() => {
-    const base = heistGearItems.map((i) => ({
+    return heistGearItems.map((i) => ({
       stockKey: i.key as string,
       name: i.name,
       defaultPrice: i.price,
       kindLabel: i.category === 'heist_pack' ? 'Pack Gros Coup' : 'Pack / Outil',
     }));
-    const conteneurs = eminenceItemsById.get('em_pack_08_conteneurs');
-    const conteneursKey = resolveCatalogItemStockKey(conteneurs);
-    if (conteneurs && conteneursKey && !base.some((b) => b.stockKey === conteneursKey)) {
-      base.push({
-        stockKey: conteneursKey,
-        name: conteneurs.name,
-        defaultPrice: conteneurs.price,
-        kindLabel: 'Pack Braquage',
-      });
-    }
-    return base;
-  }, [heistGearItems, eminenceItemsById]);
+  }, [heistGearItems]);
 
   const keysTypeEntries = useMemo<MissionGearEntry[]>(() => {
-    return EMINENCE_KEY_ITEM_IDS_LIST.map((itemId) => {
+    return EMINENCE_KEY_ITEM_IDS_LIST.map((itemId): MissionGearEntry | null => {
       const catItem = eminenceItemsById.get(itemId);
       const stockKey = resolveCatalogItemStockKey(catItem);
       if (!catItem || !stockKey) return null;
+      const isShared = Boolean(catItem.linkedGearKey);
       return {
         stockKey,
         name: catItem.name,
         defaultPrice: catItem.price,
         kindLabel: 'Clé / Accès',
+        ...(isShared ? { sharedNote: 'Synchro pack planning' } : {}),
       };
     }).filter((x): x is MissionGearEntry => x !== null);
   }, [eminenceItemsById]);
@@ -267,6 +258,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     const qty = Math.max(0, Number(inventoryStock[entry.stockKey]) || 0);
     return sum + qty * getInventoryItemPrice(entry.stockKey, inventoryPrices, entry.defaultPrice);
   }, 0);
+  const keysUniqueBreakdownVal = keysTypeEntries
+    .filter((entry) => !entry.sharedNote)
+    .reduce((sum, entry) => {
+      const qty = Math.max(0, Number(inventoryStock[entry.stockKey]) || 0);
+      return sum + qty * getInventoryItemPrice(entry.stockKey, inventoryPrices, entry.defaultPrice);
+    }, 0);
   const utilitiesUniqueBreakdownVal = utilitiesTypeEntries
     .filter((entry) => !entry.sharedNote)
     .reduce((sum, entry) => {
@@ -540,7 +537,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             {formatMoney(heistGearValTotal)}
           </div>
           <div className="text-[11px] font-mono text-zinc-400 tabular-nums">
-            Packs {formatMoney(packsBreakdownVal)} · Clés {formatMoney(keysBreakdownVal)} · Utilit.{' '}
+            Packs {formatMoney(packsBreakdownVal)} · Clés {formatMoney(keysUniqueBreakdownVal)} · Utilit.{' '}
             {formatMoney(utilitiesUniqueBreakdownVal)}
           </div>
         </div>
@@ -1648,6 +1645,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                                 {formatMoney(unitPrice)} / u
                               </span>
                             </div>
+                            {entry.sharedNote && (
+                              <div className="text-[10px] text-zinc-500 mt-0.5">
+                                {entry.sharedNote}
+                              </div>
+                            )}
                           </div>
                           <div className="text-right shrink-0">
                             <span

@@ -29,9 +29,9 @@ import {
   fmtShort,
   formatMoney,
   formatSigned,
-  getInventoryItemPrice,
   getMissionCost,
   getMissionEntry,
+  getMissionGearLabel,
   isTodayName,
   missionFin,
   netClass,
@@ -270,16 +270,9 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
         <div className="space-y-1.5">
           {missions.map((m) => {
             const st = getMissionEntry(missionStates, m.id);
-            const f = missionFin(m, missionStates, inventoryPrices);
-            const missionCost = getMissionCost(m, inventoryPrices);
-            const gearLabel =
-              m.gearKey === 'drg'
-                ? `Clé USB 3.1 (${
-                    getInventoryItemPrice('drg', inventoryPrices) > 0
-                      ? formatMoney(getInventoryItemPrice('drg', inventoryPrices))
-                      : 'Prix à définir'
-                  })`
-                : m.gearName;
+            const f = missionFin(m, missionStates, inventoryPrices, catalogGroups);
+            const missionCost = f.done ? f.cost : getMissionCost(m, inventoryPrices, catalogGroups);
+            const gearLabel = getMissionGearLabel(m, inventoryPrices, catalogGroups);
             const alloc = supplyPlan.allocationsByMissionId[m.id];
             const fallbackCheck = alloc
               ? null
@@ -719,7 +712,7 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
           let dayGains = 0;
 
           dayObj.missions.forEach((m) => {
-            const f = missionFin(m, missionStates, inventoryPrices);
+            const f = missionFin(m, missionStates, inventoryPrices, catalogGroups);
             if (f.success) okCount++;
             if (f.fail) koCount++;
             dayCost += f.cost;
@@ -802,16 +795,15 @@ export const PlanningView: React.FC<PlanningViewProps> = ({
                     <div className="p-3.5 sm:p-4 space-y-2.5 flex-1">
                       {dayObj.missions.map((mission) => {
                         const st = getMissionEntry(missionStates, mission.id);
-                        const f = missionFin(mission, missionStates, inventoryPrices);
-                        const missionCost = getMissionCost(mission, inventoryPrices);
-                        const gearLabel =
-                          mission.gearKey === 'drg'
-                            ? `Clé USB 3.1 (${
-                                getInventoryItemPrice('drg', inventoryPrices) > 0
-                                  ? formatMoney(getInventoryItemPrice('drg', inventoryPrices))
-                                  : 'Prix à définir'
-                              })`
-                            : mission.gearName;
+                        const f = missionFin(mission, missionStates, inventoryPrices, catalogGroups);
+                        const missionCost = f.done
+                          ? f.cost
+                          : getMissionCost(mission, inventoryPrices, catalogGroups);
+                        const gearLabel = getMissionGearLabel(
+                          mission,
+                          inventoryPrices,
+                          catalogGroups
+                        );
                         const isTenMin = mission.wait === '10 min';
                         const alloc = supplyPlan.allocationsByMissionId[mission.id];
                         const fallbackCheck = alloc

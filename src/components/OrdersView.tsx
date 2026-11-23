@@ -12,7 +12,11 @@ import type {
   MissionStates,
   TreasuryMoney,
 } from '@/src/types/cartel';
-import { formatMoney, getInventoryItemPrice } from '@/src/utils/finance';
+import {
+  formatMoney,
+  getInventoryItemPrice,
+  resolveCatalogSellItemPrice,
+} from '@/src/utils/finance';
 
 interface OrdersViewProps {
   missionStates: MissionStates;
@@ -137,14 +141,15 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     activeGroupSellItems.forEach((it) => {
       const qty = Math.max(0, Math.floor(Number(activeGroupCart[it.id]) || 0));
       if (qty > 0) {
-        const lineCost = qty * Math.max(0, Number(it.price) || 0);
+        const unitPrice = resolveCatalogSellItemPrice(it, inventoryPrices);
+        const lineCost = qty * unitPrice;
         totalUnits += qty;
         totalCost += lineCost;
-        lines.push({ name: it.name, qty, price: it.price, lineCost });
+        lines.push({ name: it.name, qty, price: unitPrice, lineCost });
       }
     });
     return { totalUnits, totalCost, lines };
-  }, [activeGroupSellItems, activeGroupCart]);
+  }, [activeGroupSellItems, activeGroupCart, inventoryPrices]);
 
   const totalCatalogCartUnits = useMemo(
     () =>
@@ -399,7 +404,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     key={`${as.groupId}-${as.item.id}`}
                     className="px-2 py-0.5 rounded bg-charcoal border border-bronze/40 text-[11px] tabular-nums"
                   >
-                    {as.item.name} ({formatMoney(as.item.price)})
+                    {as.item.name} ({formatMoney(resolveCatalogSellItemPrice(as.item, inventoryPrices))})
                   </span>
                 ))}
               </div>
@@ -751,6 +756,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   group={activeSupplierGroup}
                   cart={activeGroupCart}
                   inventoryStock={inventoryStock}
+                  inventoryPrices={inventoryPrices}
                   onAdjustItem={(itemId, delta) =>
                     onAdjustGroupOrderItem(activeSupplierGroup.id, itemId, delta)
                   }
@@ -775,7 +781,8 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                           0,
                           Math.floor(Number(activeGroupCart[it.id]) || 0)
                         );
-                        const lineCost = qty * Math.max(0, Number(it.price) || 0);
+                        const unitPrice = resolveCatalogSellItemPrice(it, inventoryPrices);
+                        const lineCost = qty * unitPrice;
                         return (
                           <tr
                             key={it.id}
@@ -795,7 +802,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                               {CATALOG_ITEM_CATEGORY_LABELS[it.category]}
                             </td>
                             <td className="py-2.5 px-3 text-right font-mono font-bold text-gold">
-                              {it.price > 0 ? formatMoney(it.price) : 'À fixer'}
+                              {unitPrice > 0 ? formatMoney(unitPrice) : 'À fixer'}
                             </td>
                             <td className="py-2.5 px-3">
                               <div className="flex items-center justify-center gap-1.5">

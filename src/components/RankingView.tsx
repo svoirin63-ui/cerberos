@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Award, ClipboardCopy, Crown, Medal, Shield, SlidersHorizontal, Star, Trophy } from 'lucide-react';
 import { DISTINCTION_DEFS, HIER_UNITS, RANK_LEVELS } from '@/src/data/cartelData';
 import type {
+  CatalogGroupsMap,
   DistinctionKey,
   HierarchyMember,
   HierarchyUnitKey,
@@ -13,6 +14,8 @@ import type {
 import {
   computeMemberLeaderboard,
   formatMoney,
+  formatSigned,
+  netClass,
   type RankedMemberEntry,
 } from '@/src/utils/finance';
 
@@ -22,6 +25,7 @@ interface RankingViewProps {
   weaponsStock: WeaponsStock;
   memberRankings: MemberRankingsMap;
   inventoryPrices?: InventoryPrices;
+  catalogGroups?: CatalogGroupsMap;
   readonly: boolean;
   onUpdateMemberRankings: (next: MemberRankingsMap) => void;
   onShowToast: (msg: string) => void;
@@ -37,6 +41,7 @@ export const RankingView: React.FC<RankingViewProps> = ({
   weaponsStock,
   memberRankings,
   inventoryPrices,
+  catalogGroups,
   readonly,
   onUpdateMemberRankings,
   onShowToast,
@@ -56,8 +61,9 @@ export const RankingView: React.FC<RankingViewProps> = ({
         weaponsStock,
         memberRankings,
         inventoryPrices,
+        catalogGroups,
       }),
-    [members, missionStates, weaponsStock, memberRankings, inventoryPrices]
+    [members, missionStates, weaponsStock, memberRankings, inventoryPrices, catalogGroups]
   );
 
   const topThree = useMemo(() => leaderboard.slice(0, 3), [leaderboard]);
@@ -151,7 +157,11 @@ export const RankingView: React.FC<RankingViewProps> = ({
         .map((k) => DISTINCTION_LABEL_MAP.get(k)?.title || k)
         .join(', ');
       text += `#${entry.rank} ${entry.member.name} [${HIER_UNITS[entry.member.unit]}] — ${entry.levelTitle}\n`;
-      text += `   Points: ${entry.totalPoints} pts | Missions: ${entry.missionsOk}✓/${entry.missionsKo}✗ (Gros Coups: ${entry.heistsOk}) | Butin estimé: ${formatMoney(entry.estimatedRevenue)}\n`;
+      const matDetail =
+        entry.materialCostShare > 0
+          ? ` (Brut: ${formatMoney(entry.grossRevenue)} · Mat.: -${formatMoney(entry.materialCostShare)}${entry.lossShare > 0 ? ` · Pertes: -${formatMoney(entry.lossShare)}` : ''})`
+          : '';
+      text += `   Points: ${entry.totalPoints} pts | Missions: ${entry.missionsOk}✓/${entry.missionsKo}✗ (Gros Coups: ${entry.heistsOk}) | Gains nets: ${formatSigned(entry.estimatedRevenue)}${matDetail}\n`;
       if (badges) {
         text += `   Médailles: ${badges}\n`;
       }
@@ -347,7 +357,7 @@ export const RankingView: React.FC<RankingViewProps> = ({
               <option value="points">Points totaux</option>
               <option value="missions">Missions réussies</option>
               <option value="heists">Gros Coups réussis</option>
-              <option value="revenue">Butin estimé généré</option>
+              <option value="revenue">Gains nets (mat. déduit)</option>
               <option value="weapons">Arsenal détenu ($)</option>
             </select>
           </div>
@@ -362,7 +372,12 @@ export const RankingView: React.FC<RankingViewProps> = ({
                 <th className="py-3 px-3">Membre &amp; Grade</th>
                 <th className="py-3 px-3 text-center">Missions</th>
                 <th className="py-3 px-3 text-center">Gros Coups</th>
-                <th className="py-3 px-3 text-right">Butin estimé</th>
+                <th
+                  className="py-3 px-3 text-right"
+                  title="Part par participant après déduction du matériel utilisé et des pertes"
+                >
+                  Gains nets
+                </th>
                 <th className="py-3 px-3 text-right">Arsenal détenu</th>
                 <th className="py-3 px-3 text-right">Score Total</th>
                 {!readonly && <th className="py-3 px-3 text-right">Direction</th>}
@@ -429,8 +444,16 @@ export const RankingView: React.FC<RankingViewProps> = ({
                       <td className="py-3 px-3 text-center font-mono font-bold text-gold-light">
                         {entry.heistsOk}
                       </td>
-                      <td className="py-3 px-3 text-right font-mono text-emerald-300 font-semibold">
-                        {formatMoney(entry.estimatedRevenue)}
+                      <td className="py-3 px-3 text-right font-mono">
+                        <span className={`font-semibold ${netClass(entry.estimatedRevenue)}`}>
+                          {formatSigned(entry.estimatedRevenue)}
+                        </span>
+                        {(entry.materialCostShare > 0 || entry.lossShare > 0) && (
+                          <span className="block text-[10px] text-zinc-500">
+                            Brut {formatMoney(entry.grossRevenue)} · Mat. -{formatMoney(entry.materialCostShare)}
+                            {entry.lossShare > 0 && ` · Pertes -${formatMoney(entry.lossShare)}`}
+                          </span>
+                        )}
                       </td>
                       <td className="py-3 px-3 text-right font-mono text-zinc-300">
                         {entry.weaponsHeldCount > 0 ? (

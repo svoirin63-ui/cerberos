@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
 import {
+  Banknote,
   BarChart3,
   BookOpen,
   Calendar,
   Camera,
   ClipboardCopy,
+  ExternalLink,
+  Globe,
   LayoutDashboard,
   Lock,
   LogIn,
   LogOut,
+  Newspaper,
   Package,
   RefreshCw,
   ShoppingCart,
@@ -22,6 +26,7 @@ import { AlbumView } from '@/src/components/AlbumView';
 import { AuthModal } from '@/src/components/AuthModal';
 import { CatalogView } from '@/src/components/CatalogView';
 import { DashboardHomeView } from '@/src/components/DashboardHomeView';
+import { DiscordGazetteModal } from '@/src/components/DiscordGazetteModal';
 import { HierarchyView } from '@/src/components/HierarchyView';
 import { InventoryView } from '@/src/components/InventoryView';
 import {
@@ -34,6 +39,7 @@ import { RankingView } from '@/src/components/RankingView';
 import { ResetModal } from '@/src/components/ResetModal';
 import { Toast, type ToastVariant } from '@/src/components/Toast';
 import { TreasuryView } from '@/src/components/TreasuryView';
+import { WeeklyHistoryPayrollView } from '@/src/components/WeeklyHistoryPayrollView';
 import {
   DEFAULT_CATALOG_GROUPS,
   DEFAULT_SECRET_CODE,
@@ -48,32 +54,44 @@ import {
   checkMissionStockAvailability,
   EMINENCE_MISSIONS,
   getEminenceCatalogItemsMap,
+  getEminenceMissionByGearKey,
   getSoloKitStockRequirements,
   getStockKeyDisplayName,
   resolveCatalogItemStockKey,
 } from '@/src/data/eminenceMissions';
 import { auth, googleProvider } from '@/src/firebase';
 import {
+  archiveWeekAndResetMissions,
   bootstrapAndJoinCartel,
+  claimDailyDiscordDispatch,
+  createDefaultCurrentPayroll,
   DEFAULT_ALBUM_STATE,
+  DEFAULT_DISCORD_CONFIG,
+  DEFAULT_HISTORY_STATE,
   deleteAlbumPhotoWithMedia,
+  isValidDiscordWebhookUrl,
   type LocalSeedData,
   lockEditorRole,
   type MemberRole,
   resetAllInventory,
+  rollbackDailyDiscordDispatch,
   saveAlbumPhotoWithMedia,
   saveAlbumState,
   saveAllMissionEntries,
   saveAllMissionEntriesWithSideEffects,
   saveCatalogGroups,
+  saveDiscordConfig,
   saveHierarchyMembers,
+  saveHistoryState,
   saveInventoryItem,
   saveInventoryItemPrice,
+  saveInventoryPricesBatch,
   saveInventoryOrderReceipt,
   saveLootSale,
   saveMemberRankings,
   saveMissionEntry,
   saveMissionWithSideEffects,
+  savePayrollSettlementWithTreasury,
   saveRewardItem,
   saveRewardPricesBatch,
   saveSchedulePlan,
@@ -83,6 +101,7 @@ import {
   saveWeaponsStock,
   saveWeaponsWithTreasury,
   subscribeCartelState,
+  subscribeDiscordConfig,
   unlockEditorWithCode,
   updateCartelSecretCode,
 } from '@/src/services/cartelFirestore';
@@ -91,9 +110,12 @@ import type {
   AlbumState,
   CatalogGroup,
   CatalogGroupsMap,
+  CurrentWeekPayrollState,
+  DiscordGazetteConfig,
   GearKey,
   HierarchyMember,
   HierarchyUnitKey,
+  HistoryState,
   InventoryPrices,
   InventoryStock,
   LostWeaponRecord,
@@ -110,19 +132,26 @@ import type {
   WeaponsStock,
 } from '@/src/types/cartel';
 import {
+  CATALOG_BUYBACK_ID_TO_REWARD_KEY,
+  REWARD_KEY_TO_CATALOG_BUYBACK_ID,
+  buildArchiveRecordFromWeek,
   buildDiscordReport,
   calcRewardsTotalValue,
   calcTotalWealth,
+  calcUsedGearCost,
+  computeSundayPayroll,
   currentWeekStart,
   formatMoney,
   getCatalogExtraInventoryItems,
   getCatalogStockKey,
   getInventoryItemPrice,
+  getMissionCost,
   getMissionEntry,
   getStatus,
   isoDate,
   isWeekStale,
   missionFin,
+  resolveCatalogSellItemPrice,
   weekRangeText,
 } from '@/src/utils/finance';
 import {
@@ -134,6 +163,11 @@ import {
   isPastDailyRecalcTime,
 } from '@/src/utils/schedule';
 import { simulateMissionSupplyPlan } from '@/src/utils/missionSupply';
+import {
+  buildDailyGazetteData,
+  renderGazetteCanvasDataUrl,
+  sendGazetteToDiscord,
+} from '@/src/utils/discordGazette';
 
 const LEGACY_STORAGE_KEYS = {
   missions: 'los_cerberos_local_state',
@@ -310,12 +344,17 @@ export default function App() {
   const [memberRankings, setMemberRankings] = useState<MemberRankingsMap>({});
   const [catalogGroups, setCatalogGroups] = useState<CatalogGroupsMap>(DEFAULT_CATALOG_GROUPS);
   const [albumState, setAlbumState] = useState<AlbumState>(DEFAULT_ALBUM_STATE);
+  const [historyState, setHistoryState] = useState<HistoryState>(DEFAULT_HISTORY_STATE);
+  const [discordConfig, setDiscordConfig] = useState<DiscordGazetteConfig>(DEFAULT_DISCORD_CONFIG);
+  const [discordConfigSynced, setDiscordConfigSynced] = useState(false);
+  const [hasDiscordEnvFallback, setHasDiscordEnvFallback] = useState(false);
   const [selectedCatalogGroupId, setSelectedCatalogGroupId] = useState<string>('marabunta');
   const [groupOrderCarts, setGroupOrderCarts] = useState<Record<string, Record<string, number>>>({});
 
   const [currentTab, setCurrentTab] = useState<TabKey>('home');
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [resetModalOpen, setResetModalOpen] = useState(false);
+  const [gazetteModalOpen, setGazetteModalOpen] = useState(false);
   const [validatingMission, setValidatingMission] = useState<{
     mission: Mission;
     dayName: string;
@@ -334,8 +373,13 @@ export default function App() {
   const didMigrateWhiskeyCatalogRef = useRef(false);
   const didMigrateMarabuntaLinksRef = useRef(false);
   const didMigrateEminenceCatalogRef = useRef(false);
+  const didMigrateConteneurFourgonRef = useRef(false);
+  const didMigratePricesAndMunitionKeyRef = useRef(false);
+  const didMigrateZeroInventoryPricesRef = useRef(false);
   const didTriggerSundayToastRef = useRef(false);
+  const didMigrateOldWebhookRef = useRef(false);
   const autoRecalcAttemptedDateRef = useRef<string>('');
+  const autoDiscordAttemptedDateRef = useRef<string>('');
 
   if (syncError) {
     throw syncError;
@@ -418,6 +462,7 @@ export default function App() {
           onMemberRankings: (rankings) => setMemberRankings(rankings),
           onCatalog: (groups) => setCatalogGroups(groups),
           onAlbum: (album) => setAlbumState(album),
+          onHistory: (history) => setHistoryState(history),
           onRole: (role) => setMemberRole(role),
           onError: (err) => setSyncError(err),
         });
@@ -455,6 +500,101 @@ export default function App() {
 
   const isUnlocked = memberRole === 'editor';
   const readonly = !isUnlocked;
+
+  // Editor-only subscription to private Discord Gazette configuration & server fallback status
+  useEffect(() => {
+    if (cartelStatus !== 'ready' || !isUnlocked || !authUser) {
+      setDiscordConfigSynced(false);
+      setHasDiscordEnvFallback(false);
+      setDiscordConfig(DEFAULT_DISCORD_CONFIG);
+      return;
+    }
+
+    let cancelled = false;
+    void authUser
+      .getIdToken()
+      .then((token) =>
+        fetch('/api/discord/status', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      )
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json: { hasEnvFallback?: boolean } | null) => {
+        if (!cancelled && json) {
+          setHasDiscordEnvFallback(Boolean(json.hasEnvFallback));
+        }
+      })
+      .catch(() => {
+        // ignore status check error
+      });
+
+    const unsub = subscribeDiscordConfig({
+      onConfig: (cfg) => {
+        setDiscordConfig(cfg);
+        setDiscordConfigSynced(true);
+      },
+      onError: (err) => setSyncError(err),
+    });
+
+    return () => {
+      cancelled = true;
+      unsub();
+      setDiscordConfigSynced(false);
+    };
+  }, [cartelStatus, isUnlocked, authUser]);
+
+  // Clear legacy hardcoded webhook in Firestore so updated server .env fallback takes effect
+  useEffect(() => {
+    if (
+      didMigrateOldWebhookRef.current ||
+      cartelStatus !== 'ready' ||
+      !discordConfigSynced ||
+      !isUnlocked ||
+      !authUser
+    ) {
+      return;
+    }
+    if (!discordConfig.webhookUrl.includes('/api/webhooks/1574145344894406770/')) {
+      return;
+    }
+    didMigrateOldWebhookRef.current = true;
+    const nextCfg: DiscordGazetteConfig = {
+      ...discordConfig,
+      webhookUrl: '',
+    };
+    setDiscordConfig(nextCfg);
+    void saveDiscordConfig(authUser.uid, nextCfg).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+  }, [cartelStatus, discordConfigSynced, isUnlocked, authUser, discordConfig]);
+
+  // Schedule wake-up timer if Discord Gazette auto-send time is later today
+  useEffect(() => {
+    if (
+      cartelStatus !== 'ready' ||
+      !isUnlocked ||
+      !authUser ||
+      !discordConfig.autoEnabled
+    ) {
+      return;
+    }
+    const now = new Date();
+    const target = new Date(now);
+    target.setHours(discordConfig.sendHour, discordConfig.sendMinute, 2, 0);
+    if (target.getTime() <= now.getTime()) return;
+    const ms = Math.max(1000, target.getTime() - now.getTime());
+    const timer = window.setTimeout(() => {
+      setRecalcClockTick(Date.now());
+    }, ms);
+    return () => window.clearTimeout(timer);
+  }, [
+    cartelStatus,
+    isUnlocked,
+    authUser,
+    discordConfig.autoEnabled,
+    discordConfig.sendHour,
+    discordConfig.sendMinute,
+  ]);
 
   // Automatic daily 09:30 schedule recalculation for uncompleted overdue missions
   useEffect(() => {
@@ -504,6 +644,137 @@ export default function App() {
     authUser,
     missionStates,
     scheduleMeta,
+    recalcClockTick,
+    showToast,
+  ]);
+
+  // Automatic daily Discord Gazette dispatch (at >= sendHour:sendMinute on first editor open)
+  useEffect(() => {
+    if (
+      cartelStatus !== 'ready' ||
+      !scheduleSynced ||
+      !discordConfigSynced ||
+      !isUnlocked ||
+      !authUser
+    ) {
+      return;
+    }
+
+    const hasEffectiveWebhook =
+      isValidDiscordWebhookUrl(discordConfig.webhookUrl) || hasDiscordEnvFallback;
+    if (!discordConfig.autoEnabled || !hasEffectiveWebhook) {
+      return;
+    }
+
+    const now = new Date();
+    const todayIso = isoDate(now);
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const targetMinutes = discordConfig.sendHour * 60 + discordConfig.sendMinute;
+    if (nowMinutes < targetMinutes) return;
+
+    // Wait for the 09:30 schedule recalc to run first when active this week
+    if (
+      !isWeekStale(missionStates) &&
+      isPastDailyRecalcTime(now) &&
+      getCurrentWeekTodayName(missionStates, now) &&
+      scheduleMeta.lastRecalcDate !== todayIso
+    ) {
+      return;
+    }
+
+    if (discordConfig.lastSentDate === todayIso) return;
+    if (autoDiscordAttemptedDateRef.current === todayIso) return;
+
+    autoDiscordAttemptedDateRef.current = todayIso;
+    const senderName =
+      authUser.displayName || authUser.email?.split('@')[0] || 'Éditeur';
+
+    void (async () => {
+      let claimedPrev: {
+        lastSentDate: string;
+        lastSentAt: string;
+        lastSentBy: string;
+      } | null = null;
+      try {
+        const claim = await claimDailyDiscordDispatch(
+          authUser.uid,
+          todayIso,
+          senderName,
+          hasDiscordEnvFallback
+        );
+        if (!claim.claimed || !claim.config) return;
+        claimedPrev = {
+          lastSentDate: claim.previousLastSentDate,
+          lastSentAt: claim.previousLastSentAt,
+          lastSentBy: claim.previousLastSentBy,
+        };
+
+        const gazetteData = await buildDailyGazetteData({
+          missionStates,
+          scheduleMeta,
+          inventoryStock,
+          inventoryPrices,
+          weaponsStock,
+          rewardStocks,
+          treasuryMoney,
+          weaponsLossAmount,
+          hierMembers,
+          memberRankings,
+          catalogGroups,
+          albumState,
+          customMessage: claim.config.customMessage,
+          now,
+        });
+        const imageBase64 = await renderGazetteCanvasDataUrl(gazetteData, {
+          includePhoto: claim.config.includePhoto,
+        });
+        const idToken = await authUser.getIdToken();
+        await sendGazetteToDiscord({
+          idToken,
+          webhookUrl: claim.config.webhookUrl,
+          imageBase64,
+          data: gazetteData,
+          config: claim.config,
+        });
+
+        setDiscordConfig(claim.config);
+        showToast('📰 Gazette quotidienne envoyée automatiquement sur Discord !');
+      } catch (err) {
+        if (claimedPrev) {
+          void rollbackDailyDiscordDispatch(
+            authUser.uid,
+            todayIso,
+            claimedPrev
+          ).catch(() => {
+            // ignore rollback secondary failure
+          });
+        }
+        const msg = err instanceof Error ? err.message : 'Erreur Discord';
+        showToast(`Échec de l’envoi auto Discord : ${msg}`, {
+          variant: 'warning',
+        });
+      }
+    })();
+  }, [
+    cartelStatus,
+    scheduleSynced,
+    discordConfigSynced,
+    hasDiscordEnvFallback,
+    isUnlocked,
+    authUser,
+    discordConfig,
+    missionStates,
+    scheduleMeta,
+    inventoryStock,
+    inventoryPrices,
+    weaponsStock,
+    rewardStocks,
+    treasuryMoney,
+    weaponsLossAmount,
+    hierMembers,
+    memberRankings,
+    catalogGroups,
+    albumState,
     recalcClockTick,
     showToast,
   ]);
@@ -668,6 +939,148 @@ export default function App() {
   }, [cartelStatus, isUnlocked, authUser, catalogGroups]);
 
   useEffect(() => {
+    if (didMigrateConteneurFourgonRef.current) return;
+    if (cartelStatus !== 'ready' || !isUnlocked || !authUser) return;
+    const eminence = catalogGroups.eminence;
+    if (!eminence) return;
+
+    didMigrateConteneurFourgonRef.current = true;
+    let changed = false;
+
+    const filteredItems = eminence.items.filter((item) => {
+      if (item.id === 'em_pack_08_conteneurs') {
+        changed = true;
+        return false;
+      }
+      return true;
+    });
+
+    const updatedItems = filteredItems.map((item) => {
+      if (item.id === 'em_cle_fourgon') {
+        if (item.linkedGearKey !== 'frg' || item.notes !== 'Documents · Stock unifié Fourgon') {
+          changed = true;
+          return {
+            ...item,
+            linkedGearKey: 'frg' as GearKey,
+            notes: 'Documents · Stock unifié Fourgon',
+          };
+        }
+      } else if (item.id === 'em_pack_04_fourgon' && item.notes === 'Pack braquage · Perceuse de forage') {
+        changed = true;
+        return { ...item, notes: 'Pack braquage · Clé fourgon blindé' };
+      } else if (item.id === 'em_pack_06_fleeca' && item.notes === 'Pack braquage · Perceuse de forage') {
+        changed = true;
+        return { ...item, notes: 'Pack braquage · Clé banque Fleeca + Perceuse' };
+      } else if (item.id === 'em_pack_09_train' && item.notes === 'Pack braquage · Meuleuse de forage') {
+        changed = true;
+        return { ...item, notes: 'Pack braquage · Clé braquage train + Meuleuse' };
+      }
+      return item;
+    });
+
+    if (!changed) return;
+
+    const nextGroups: CatalogGroupsMap = {
+      ...catalogGroups,
+      eminence: {
+        ...eminence,
+        items: updatedItems,
+      },
+    };
+    setCatalogGroups(nextGroups);
+    void saveCatalogGroups(authUser.uid, nextGroups).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+  }, [cartelStatus, isUnlocked, authUser, catalogGroups]);
+
+  useEffect(() => {
+    if (didMigratePricesAndMunitionKeyRef.current) return;
+    if (cartelStatus !== 'ready' || !isUnlocked || !authUser) return;
+    if (Object.keys(catalogGroups).length === 0) return;
+
+    didMigratePricesAndMunitionKeyRef.current = true;
+
+    let catalogChanged = false;
+    const nextGroups: CatalogGroupsMap = { ...catalogGroups };
+
+    if (catalogGroups.eminence) {
+      const nextEminenceItems = catalogGroups.eminence.items.filter((item) => {
+        if (item.id === 'em_cle_munition') {
+          catalogChanged = true;
+          return false;
+        }
+        return true;
+      });
+      if (catalogChanged) {
+        nextGroups.eminence = {
+          ...catalogGroups.eminence,
+          items: nextEminenceItems,
+        };
+      }
+    }
+
+    if (catalogGroups.marabunta) {
+      let marabuntaChanged = false;
+      const nextMarabuntaItems = catalogGroups.marabunta.items.map((item) => {
+        if (item.id === 'mg_gilet' && Number(item.price) === 0) {
+          marabuntaChanged = true;
+          return {
+            ...item,
+            price: 500,
+            notes:
+              item.notes === 'Protection renforcée · Tarif à confirmer avec le contact'
+                ? 'Protection renforcée · Tarif unitaire 500 $'
+                : item.notes,
+          };
+        }
+        return item;
+      });
+      if (marabuntaChanged) {
+        catalogChanged = true;
+        nextGroups.marabunta = {
+          ...catalogGroups.marabunta,
+          items: nextMarabuntaItems,
+        };
+      }
+    }
+
+    if (catalogChanged) {
+      setCatalogGroups(nextGroups);
+      void saveCatalogGroups(authUser.uid, nextGroups).catch((err) =>
+        setSyncError(err instanceof Error ? err : new Error(String(err)))
+      );
+    }
+  }, [cartelStatus, isUnlocked, authUser, catalogGroups]);
+
+  useEffect(() => {
+    if (didMigrateZeroInventoryPricesRef.current) return;
+    if (cartelStatus !== 'ready' || !isUnlocked || !authUser) return;
+
+    const priceFixes: Array<{ key: string; price: number }> = [];
+    if (inventoryPrices.gilet === 0) {
+      priceFixes.push({ key: 'gilet', price: 500 });
+    }
+    if (inventoryPrices.drg === 0) {
+      priceFixes.push({ key: 'drg', price: 750 });
+    }
+    if (priceFixes.length === 0) return;
+
+    didMigrateZeroInventoryPricesRef.current = true;
+    setInventoryPrices((prev) => {
+      const next = { ...prev };
+      priceFixes.forEach((p) => {
+        next[p.key] = p.price;
+      });
+      return next;
+    });
+    priceFixes.forEach((p) => {
+      void saveInventoryItemPrice(authUser.uid, p.key, p.price).catch((err) =>
+        setSyncError(err instanceof Error ? err : new Error(String(err)))
+      );
+    });
+  }, [cartelStatus, isUnlocked, authUser, inventoryPrices]);
+
+  useEffect(() => {
     if (didTriggerSundayToastRef.current || cartelStatus !== 'ready') return;
     const now = new Date();
     if (now.getDay() !== 0) return;
@@ -711,7 +1124,7 @@ export default function App() {
 
     WEEKLY_SCHEDULE.forEach((day) => {
       day.missions.forEach((mission) => {
-        const f = missionFin(mission, missionStates, inventoryPrices);
+        const f = missionFin(mission, missionStates, inventoryPrices, catalogGroups);
         if (f.success) successCount++;
         if (f.fail) failCount++;
         totalCost += f.cost;
@@ -842,10 +1255,13 @@ export default function App() {
       Object.keys(nextUsedGear).length === 0 &&
       cur.gearConsumed &&
       mission &&
-      mission.gearKey !== 'none' &&
-      INVENTORY_ITEMS.some((i) => i.key === mission.gearKey)
+      mission.gearKey !== 'none'
     ) {
-      nextUsedGear[mission.gearKey] = 1;
+      if (INVENTORY_ITEMS.some((i) => i.key === mission.gearKey)) {
+        nextUsedGear[mission.gearKey] = 1;
+      } else if (mission.gearKey === 'amu') {
+        nextUsedGear.cat_em_cle_ammunation = 1;
+      }
     }
 
     let inventoryPatch: Record<string, number> | undefined;
@@ -894,10 +1310,12 @@ export default function App() {
         nextUsedGear = {};
         nextGearConsumed = false;
       } else if (cur.gearConsumed && mission && mission.gearKey !== 'none') {
-        const updatedQty = (inventoryStock[mission.gearKey] || 0) + 1;
-        inventoryPatch = { [mission.gearKey]: updatedQty };
+        const fallbackKey =
+          mission.gearKey === 'amu' ? 'cat_em_cle_ammunation' : mission.gearKey;
+        const updatedQty = (inventoryStock[fallbackKey] || 0) + 1;
+        inventoryPatch = { [fallbackKey]: updatedQty };
         nextGearConsumed = false;
-        setInventoryStock((prev) => ({ ...prev, [mission.gearKey]: updatedQty }));
+        setInventoryStock((prev) => ({ ...prev, [fallbackKey]: updatedQty }));
       }
     }
 
@@ -905,7 +1323,10 @@ export default function App() {
     let nextCashGain = Math.max(0, Number(cur.cashGain) || 0);
     let nextLoot = cur.loot ? { ...cur.loot } : {};
     let rewardPatches: Record<string, RewardStockEntry> | undefined;
-    let resetTreasuryPatch: Partial<TreasuryMoney> | undefined;
+    let nextLegalBalance = Math.max(0, Number(treasuryMoney.legal) || 0);
+    let nextIllegalBalance = Math.max(0, Number(treasuryMoney.illegal) || 0);
+    let legalTouched = false;
+    let illegalTouched = false;
 
     if (prevStatus === 'success' && next !== 'success') {
       if (Object.keys(nextLoot).length > 0) {
@@ -929,9 +1350,8 @@ export default function App() {
         nextLoot = {};
       }
       if (nextCashGain > 0) {
-        const updatedIllegal = Math.max(0, (Number(treasuryMoney.illegal) || 0) - nextCashGain);
-        resetTreasuryPatch = { illegal: updatedIllegal };
-        setTreasuryMoney((prev) => ({ ...prev, illegal: updatedIllegal }));
+        nextIllegalBalance = Math.max(0, nextIllegalBalance - nextCashGain);
+        illegalTouched = true;
         nextGain = Math.max(0, nextGain - nextCashGain);
         nextCashGain = 0;
       }
@@ -942,30 +1362,67 @@ export default function App() {
       ? [...cur.lostWeapons]
       : [];
     let nextWeaponsArg: WeaponsStock | undefined;
-    if (prevStatus !== '' && next === '' && nextLostWeapons.length > 0) {
-      const updatedWeapons = { ...weaponsStock };
-      nextLostWeapons.forEach((lw) => {
-        nextExtra = Math.max(0, nextExtra - (Number(lw.value) || 0));
-        const existing = updatedWeapons[lw.id];
-        if (existing) {
-          updatedWeapons[lw.id] = {
-            ...existing,
-            qty: Math.max(1, (Number(existing.qty) || 0) + 1),
-          };
-        } else if (lw.id) {
-          updatedWeapons[lw.id] = {
-            id: lw.id,
-            name: lw.name,
-            value: Math.max(0, Number(lw.value) || 0),
-            qty: 1,
-            holderId: lw.holderId || 'coffre',
-            notes: '',
-          };
+    let nextCashLossDebitAccount: 'none' | 'legal' | 'illegal' =
+      cur.cashLossDebitAccount === 'legal' || cur.cashLossDebitAccount === 'illegal'
+        ? cur.cashLossDebitAccount
+        : 'none';
+    let nextCashLossDebitAmount = Math.max(0, Number(cur.cashLossDebitAmount) || 0);
+
+    if (prevStatus !== '' && next === '') {
+      if (nextLostWeapons.length > 0) {
+        const updatedWeapons = { ...weaponsStock };
+        nextLostWeapons.forEach((lw) => {
+          const existing = updatedWeapons[lw.id];
+          if (existing) {
+            updatedWeapons[lw.id] = {
+              ...existing,
+              qty: Math.max(1, (Number(existing.qty) || 0) + 1),
+            };
+          } else if (lw.id) {
+            updatedWeapons[lw.id] = {
+              id: lw.id,
+              name: lw.name,
+              value: Math.max(0, Number(lw.value) || 0),
+              qty: 1,
+              holderId: lw.holderId || 'coffre',
+              notes: '',
+            };
+          }
+        });
+        setWeaponsStock(updatedWeapons);
+        nextWeaponsArg = updatedWeapons;
+        nextLostWeapons = [];
+      }
+
+      if (nextCashLossDebitAmount > 0 && nextCashLossDebitAccount !== 'none') {
+        if (nextCashLossDebitAccount === 'legal') {
+          nextLegalBalance += nextCashLossDebitAmount;
+          legalTouched = true;
+        } else {
+          nextIllegalBalance += nextCashLossDebitAmount;
+          illegalTouched = true;
         }
-      });
-      setWeaponsStock(updatedWeapons);
-      nextWeaponsArg = updatedWeapons;
+      }
+
+      nextGain = 0;
+      nextCashGain = 0;
+      nextLoot = {};
+      nextExtra = 0;
       nextLostWeapons = [];
+      nextCashLossDebitAccount = 'none';
+      nextCashLossDebitAmount = 0;
+    }
+
+    let resetTreasuryPatch: Partial<TreasuryMoney> | undefined;
+    if (legalTouched || illegalTouched) {
+      resetTreasuryPatch = {};
+      if (legalTouched) resetTreasuryPatch.legal = nextLegalBalance;
+      if (illegalTouched) resetTreasuryPatch.illegal = nextIllegalBalance;
+      setTreasuryMoney((prev) => ({
+        ...prev,
+        ...(legalTouched ? { legal: nextLegalBalance } : {}),
+        ...(illegalTouched ? { illegal: nextIllegalBalance } : {}),
+      }));
     }
 
     const updatedEntry: MissionStateEntry = {
@@ -980,6 +1437,8 @@ export default function App() {
       usedGear: nextUsedGear,
       loot: nextLoot,
       lostWeapons: nextLostWeapons,
+      cashLossDebitAccount: nextCashLossDebitAccount,
+      cashLossDebitAmount: nextCashLossDebitAmount,
     };
     setMissionStates((prev) => ({ ...prev, [id]: updatedEntry }));
 
@@ -996,9 +1455,14 @@ export default function App() {
       );
     }
 
-    if (prevStatus === '' && next !== '' && mission && INVENTORY_ITEMS.some((i) => i.key === mission.gearKey)) {
-      const invItem = INVENTORY_ITEMS.find((i) => i.key === mission.gearKey);
-      const itemPrice = getInventoryItemPrice(mission.gearKey, inventoryPrices);
+    const hasTrackableMissionGear =
+      !!mission &&
+      mission.gearKey !== 'none' &&
+      (INVENTORY_ITEMS.some((i) => i.key === mission.gearKey) ||
+        Boolean(getEminenceMissionByGearKey(mission.gearKey)) ||
+        getMissionCost(mission, inventoryPrices, catalogGroups) > 0);
+
+    if (prevStatus === '' && next !== '' && mission && hasTrackableMissionGear) {
       const updatedMap = inventoryPatch
         ? { ...inventoryStock, ...inventoryPatch }
         : inventoryStock;
@@ -1009,9 +1473,24 @@ export default function App() {
         catalogGroups,
       });
 
+      const debitedEntries = inventoryPatch ? Object.entries(nextUsedGear) : [];
+      const debitedLabel =
+        debitedEntries.length > 0
+          ? debitedEntries
+              .map(([k, q]) => `${q}× ${getStockKeyDisplayName(k, catalogGroups)}`)
+              .join(' + ')
+          : getStockKeyDisplayName(
+              mission.gearKey === 'amu' ? 'cat_em_cle_ammunation' : mission.gearKey,
+              catalogGroups
+            );
+      const debitedCost =
+        inventoryPatch && Object.keys(nextUsedGear).length > 0
+          ? calcUsedGearCost(nextUsedGear, inventoryPrices, catalogGroups).cost
+          : getMissionCost(mission, inventoryPrices, catalogGroups);
+
       if (stockAlert) {
         const baseMsg = inventoryPatch
-          ? `Mission validée (-1 ${invItem?.name || 'matériel'})`
+          ? `Mission validée (-${debitedLabel})`
           : `Mission validée`;
         showToast(`${stockAlert.message} · ${baseMsg}`, {
           variant: stockAlert.variant,
@@ -1019,13 +1498,13 @@ export default function App() {
         });
       } else if (inventoryPatch) {
         showToast(
-          `Mission validée — 1× ${invItem?.name || 'matériel'} débité de l'inventaire (-${formatMoney(itemPrice)}).`
+          `Mission validée — ${debitedLabel} débité de l'inventaire (-${formatMoney(debitedCost)}).`
         );
       } else {
-        showToast(`Mission validée (stock ${invItem?.name || 'matériel'} déjà à 0).`);
+        showToast(`Mission validée (stock ${debitedLabel} déjà à 0).`);
       }
-    } else if (prevStatus !== '' && next === '' && inventoryPatch) {
-      showToast('Mission annulée — matériel remis en inventaire.');
+    } else if (prevStatus !== '' && next === '' && (inventoryPatch || resetTreasuryPatch)) {
+      showToast('Mission annulée — matériel et trésorerie restaurés.');
     }
   };
 
@@ -1062,10 +1541,13 @@ export default function App() {
     if (
       Object.keys(prevUsedGear).length === 0 &&
       cur.gearConsumed &&
-      mission.gearKey !== 'none' &&
-      INVENTORY_ITEMS.some((i) => i.key === mission.gearKey)
+      mission.gearKey !== 'none'
     ) {
-      prevUsedGear[mission.gearKey] = 1;
+      if (INVENTORY_ITEMS.some((i) => i.key === mission.gearKey)) {
+        prevUsedGear[mission.gearKey] = 1;
+      } else if (mission.gearKey === 'amu') {
+        prevUsedGear.cat_em_cle_ammunation = 1;
+      }
     }
 
     const nextUsedGear: Record<string, number> = {};
@@ -1198,12 +1680,38 @@ export default function App() {
       illegalTouched = true;
     }
 
-    if (payload.treasuryDebitAccount !== 'none' && payload.treasuryDebitAmount > 0) {
-      if (payload.treasuryDebitAccount === 'legal') {
-        nextLegal = Math.max(0, nextLegal - payload.treasuryDebitAmount);
+    const prevDebitAccount =
+      cur.cashLossDebitAccount === 'legal' || cur.cashLossDebitAccount === 'illegal'
+        ? cur.cashLossDebitAccount
+        : 'none';
+    const prevDebitAmount =
+      prevDebitAccount !== 'none' ? Math.max(0, Number(cur.cashLossDebitAmount) || 0) : 0;
+
+    if (prevDebitAmount > 0 && prevDebitAccount !== 'none') {
+      if (prevDebitAccount === 'legal') {
+        nextLegal += prevDebitAmount;
         legalTouched = true;
       } else {
-        nextIllegal = Math.max(0, nextIllegal - payload.treasuryDebitAmount);
+        nextIllegal += prevDebitAmount;
+        illegalTouched = true;
+      }
+    }
+
+    const nextDebitAccount: 'none' | 'legal' | 'illegal' =
+      payload.treasuryDebitAccount !== 'none' && payload.treasuryDebitAmount > 0
+        ? payload.treasuryDebitAccount
+        : 'none';
+    const nextDebitAmount =
+      nextDebitAccount !== 'none'
+        ? Math.max(0, Math.round(Number(payload.treasuryDebitAmount) || 0))
+        : 0;
+
+    if (nextDebitAccount !== 'none' && nextDebitAmount > 0) {
+      if (nextDebitAccount === 'legal') {
+        nextLegal = Math.max(0, nextLegal - nextDebitAmount);
+        legalTouched = true;
+      } else {
+        nextIllegal = Math.max(0, nextIllegal - nextDebitAmount);
         illegalTouched = true;
       }
     }
@@ -1236,6 +1744,8 @@ export default function App() {
       usedGear: nextUsedGear,
       loot: nextLoot,
       lostWeapons: nextLost,
+      cashLossDebitAccount: nextDebitAccount,
+      cashLossDebitAmount: nextDebitAmount,
     };
 
     setMissionStates((prev) => ({ ...prev, [payload.missionId]: updatedEntry }));
@@ -1310,7 +1820,8 @@ export default function App() {
     const rewardPatches: Record<string, RewardStockEntry> = {};
     const nextWeapons = { ...weaponsStock };
     let weaponsTouched = false;
-    let illegalCashRollback = 0;
+    let bulkLegalDelta = 0;
+    let bulkIllegalDelta = 0;
 
     missions.forEach((m) => {
       const cur = getMissionEntry(missionStates, m.id);
@@ -1323,10 +1834,13 @@ export default function App() {
       if (
         Object.keys(nextUsedGear).length === 0 &&
         cur.gearConsumed &&
-        m.gearKey !== 'none' &&
-        INVENTORY_ITEMS.some((i) => i.key === m.gearKey)
+        m.gearKey !== 'none'
       ) {
-        nextUsedGear[m.gearKey] = 1;
+        if (INVENTORY_ITEMS.some((i) => i.key === m.gearKey)) {
+          nextUsedGear[m.gearKey] = 1;
+        } else if (m.gearKey === 'amu') {
+          nextUsedGear.cat_em_cle_ammunation = 1;
+        }
       }
 
       if (prevStatus === '' && status !== '' && m.gearKey !== 'none') {
@@ -1367,9 +1881,10 @@ export default function App() {
           nextUsedGear = {};
           nextGearConsumed = false;
         } else if (cur.gearConsumed && m.gearKey !== 'none') {
-          const updatedQty = (nextInventory[m.gearKey] || 0) + 1;
-          nextInventory[m.gearKey] = updatedQty;
-          inventoryPatch[m.gearKey] = updatedQty;
+          const fallbackKey = m.gearKey === 'amu' ? 'cat_em_cle_ammunation' : m.gearKey;
+          const updatedQty = (nextInventory[fallbackKey] || 0) + 1;
+          nextInventory[fallbackKey] = updatedQty;
+          inventoryPatch[fallbackKey] = updatedQty;
           nextGearConsumed = false;
         }
       }
@@ -1396,7 +1911,7 @@ export default function App() {
           nextLoot = {};
         }
         if (nextCashGain > 0) {
-          illegalCashRollback += nextCashGain;
+          bulkIllegalDelta -= nextCashGain;
           nextGain = Math.max(0, nextGain - nextCashGain);
           nextCashGain = 0;
         }
@@ -1406,28 +1921,50 @@ export default function App() {
       let nextLostWeapons: LostWeaponRecord[] = Array.isArray(cur.lostWeapons)
         ? [...cur.lostWeapons]
         : [];
-      if (prevStatus !== '' && status === '' && nextLostWeapons.length > 0) {
-        nextLostWeapons.forEach((lw) => {
-          nextExtra = Math.max(0, nextExtra - (Number(lw.value) || 0));
-          const existing = nextWeapons[lw.id];
-          if (existing) {
-            nextWeapons[lw.id] = {
-              ...existing,
-              qty: Math.max(1, (Number(existing.qty) || 0) + 1),
-            };
-          } else if (lw.id) {
-            nextWeapons[lw.id] = {
-              id: lw.id,
-              name: lw.name,
-              value: Math.max(0, Number(lw.value) || 0),
-              qty: 1,
-              holderId: lw.holderId || 'coffre',
-              notes: '',
-            };
+      let nextCashLossDebitAccount: 'none' | 'legal' | 'illegal' =
+        cur.cashLossDebitAccount === 'legal' || cur.cashLossDebitAccount === 'illegal'
+          ? cur.cashLossDebitAccount
+          : 'none';
+      let nextCashLossDebitAmount = Math.max(0, Number(cur.cashLossDebitAmount) || 0);
+
+      if (prevStatus !== '' && status === '') {
+        if (nextLostWeapons.length > 0) {
+          nextLostWeapons.forEach((lw) => {
+            const existing = nextWeapons[lw.id];
+            if (existing) {
+              nextWeapons[lw.id] = {
+                ...existing,
+                qty: Math.max(1, (Number(existing.qty) || 0) + 1),
+              };
+            } else if (lw.id) {
+              nextWeapons[lw.id] = {
+                id: lw.id,
+                name: lw.name,
+                value: Math.max(0, Number(lw.value) || 0),
+                qty: 1,
+                holderId: lw.holderId || 'coffre',
+                notes: '',
+              };
+            }
+            weaponsTouched = true;
+          });
+        }
+
+        if (nextCashLossDebitAmount > 0 && nextCashLossDebitAccount !== 'none') {
+          if (nextCashLossDebitAccount === 'legal') {
+            bulkLegalDelta += nextCashLossDebitAmount;
+          } else {
+            bulkIllegalDelta += nextCashLossDebitAmount;
           }
-          weaponsTouched = true;
-        });
+        }
+
+        nextGain = 0;
+        nextCashGain = 0;
+        nextLoot = {};
+        nextExtra = 0;
         nextLostWeapons = [];
+        nextCashLossDebitAccount = 'none';
+        nextCashLossDebitAmount = 0;
       }
 
       nextStates[m.id] = {
@@ -1442,6 +1979,8 @@ export default function App() {
         usedGear: nextUsedGear,
         loot: nextLoot,
         lostWeapons: nextLostWeapons,
+        cashLossDebitAccount: nextCashLossDebitAccount,
+        cashLossDebitAmount: nextCashLossDebitAmount,
       };
     });
 
@@ -1450,10 +1989,18 @@ export default function App() {
     if (weaponsTouched) setWeaponsStock(nextWeapons);
 
     let bulkTreasuryPatch: Partial<TreasuryMoney> | undefined;
-    if (illegalCashRollback > 0) {
-      const updatedIllegal = Math.max(0, (Number(treasuryMoney.illegal) || 0) - illegalCashRollback);
-      bulkTreasuryPatch = { illegal: updatedIllegal };
-      setTreasuryMoney((prev) => ({ ...prev, illegal: updatedIllegal }));
+    if (bulkLegalDelta !== 0 || bulkIllegalDelta !== 0) {
+      bulkTreasuryPatch = {};
+      if (bulkLegalDelta !== 0) {
+        bulkTreasuryPatch.legal = Math.max(0, (Number(treasuryMoney.legal) || 0) + bulkLegalDelta);
+      }
+      if (bulkIllegalDelta !== 0) {
+        bulkTreasuryPatch.illegal = Math.max(0, (Number(treasuryMoney.illegal) || 0) + bulkIllegalDelta);
+      }
+      setTreasuryMoney((prev) => ({
+        ...prev,
+        ...bulkTreasuryPatch,
+      }));
     }
 
     setMissionStates(nextStates);
@@ -1545,31 +2092,108 @@ export default function App() {
     );
   };
 
+  const buildUniqueArchiveId = (
+    weekKey: string,
+    existingArchives: Record<string, unknown>
+  ): string => {
+    const cleanBase = weekKey.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48) || 'week';
+    if (!existingArchives[cleanBase]) return cleanBase;
+    return `${cleanBase}_${Date.now().toString(36)}`.slice(0, 64);
+  };
+
   const handleStartNewWeek = () => {
     if (readonly || !authUser) return;
+    const closingWeek = missionStates.__week || isoDate(currentWeekStart());
     const newWeek = isoDate(currentWeekStart());
+    const hasActivity =
+      kpis.successCount + kpis.failCount > 0 ||
+      weaponsLossAmount > 0 ||
+      historyState.currentPayroll.settled;
+
+    const nextArchives = { ...historyState.archives };
+    if (hasActivity) {
+      const archiveId = buildUniqueArchiveId(closingWeek, nextArchives);
+      const actorName =
+        authUser.displayName || authUser.email?.split('@')[0] || 'Éditeur';
+      nextArchives[archiveId] = buildArchiveRecordFromWeek({
+        archiveId,
+        archivedBy: actorName,
+        missionStates,
+        scheduleMeta,
+        weaponsLossAmount,
+        members: hierMembers,
+        inventoryPrices,
+        catalogGroups,
+        currentPayroll: historyState.currentPayroll,
+      });
+    }
+
+    const nextHistoryState: HistoryState = {
+      archives: nextArchives,
+      currentPayroll: createDefaultCurrentPayroll(newWeek),
+    };
+
     autoRecalcAttemptedDateRef.current = '';
     setMissionStates({ __week: newWeek });
     setScheduleMeta(EMPTY_SCHEDULE_META);
     setWeaponsLossAmount(0);
-    void Promise.all([
-      saveAllMissionEntries(authUser.uid, newWeek, {}, EMPTY_SCHEDULE_META),
-      saveWeaponsLoss(authUser.uid, 0),
-    ]).catch((err) => setSyncError(err instanceof Error ? err : new Error(String(err))));
-    showToast('Nouvelle semaine démarrée !');
+    setHistoryState(nextHistoryState);
+    void archiveWeekAndResetMissions(authUser.uid, {
+      historyState: nextHistoryState,
+      nextWeek: newWeek,
+      weaponsLossAmount: 0,
+    }).catch((err) => setSyncError(err instanceof Error ? err : new Error(String(err))));
+    showToast(
+      hasActivity
+        ? 'Semaine précédente archivée et nouvelle semaine démarrée !'
+        : 'Nouvelle semaine démarrée !'
+    );
   };
 
-  const handleConfirmResetWeek = () => {
+  const handleConfirmResetWeek = (archiveBeforeReset: boolean) => {
     if (readonly || !authUser) return;
+    const closingWeek = missionStates.__week || isoDate(currentWeekStart());
     const newWeek = isoDate(currentWeekStart());
+
+    const nextArchives = { ...historyState.archives };
+    if (archiveBeforeReset) {
+      const archiveId = buildUniqueArchiveId(closingWeek, nextArchives);
+      const actorName =
+        authUser.displayName || authUser.email?.split('@')[0] || 'Éditeur';
+      nextArchives[archiveId] = buildArchiveRecordFromWeek({
+        archiveId,
+        archivedBy: actorName,
+        missionStates,
+        scheduleMeta,
+        weaponsLossAmount,
+        members: hierMembers,
+        inventoryPrices,
+        catalogGroups,
+        currentPayroll: historyState.currentPayroll,
+      });
+    }
+
+    const nextHistoryState: HistoryState = {
+      archives: nextArchives,
+      currentPayroll: createDefaultCurrentPayroll(newWeek),
+    };
+
     autoRecalcAttemptedDateRef.current = '';
     setMissionStates({ __week: newWeek });
     setScheduleMeta(EMPTY_SCHEDULE_META);
+    setWeaponsLossAmount(0);
+    setHistoryState(nextHistoryState);
     setResetModalOpen(false);
-    void saveAllMissionEntries(authUser.uid, newWeek, {}, EMPTY_SCHEDULE_META).catch((err) =>
-      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    void archiveWeekAndResetMissions(authUser.uid, {
+      historyState: nextHistoryState,
+      nextWeek: newWeek,
+      weaponsLossAmount: 0,
+    }).catch((err) => setSyncError(err instanceof Error ? err : new Error(String(err))));
+    showToast(
+      archiveBeforeReset
+        ? 'Semaine archivée dans l’historique et réinitialisée !'
+        : 'Semaine réinitialisée !'
     );
-    showToast('Semaine réinitialisée !');
   };
 
   const handleUpdateStock = (key: string, delta: number, deductIllegal: boolean = true) => {
@@ -1626,6 +2250,30 @@ export default function App() {
     void saveInventoryItemPrice(authUser.uid, key, cleanPrice).catch((err) =>
       setSyncError(err instanceof Error ? err : new Error(String(err)))
     );
+
+    let catalogChanged = false;
+    const nextGroups: CatalogGroupsMap = {};
+    Object.entries(catalogGroups).forEach(([gId, grp]) => {
+      let grpChanged = false;
+      const nextItems = grp.items.map((item) => {
+        if (item.tradeType !== 'sell') return item;
+        const itemStockKey = resolveCatalogItemStockKey(item);
+        if (itemStockKey === key && Math.round(Number(item.price) || 0) !== cleanPrice) {
+          grpChanged = true;
+          catalogChanged = true;
+          return { ...item, price: cleanPrice };
+        }
+        return item;
+      });
+      nextGroups[gId] = grpChanged ? { ...grp, items: nextItems } : grp;
+    });
+
+    if (catalogChanged) {
+      setCatalogGroups(nextGroups);
+      void saveCatalogGroups(authUser.uid, nextGroups).catch((err) =>
+        setSyncError(err instanceof Error ? err : new Error(String(err)))
+      );
+    }
   };
 
   const handleResetStock = () => {
@@ -1822,8 +2470,93 @@ export default function App() {
 
   const handleSaveCatalogGroups = (nextGroups: CatalogGroupsMap) => {
     if (readonly || !authUser) return;
-    setCatalogGroups(nextGroups);
-    void saveCatalogGroups(authUser.uid, nextGroups).catch((err) =>
+
+    const prevItemsByKey = new Map<string, CatalogGroup['items'][number]>();
+    Object.entries(catalogGroups).forEach(([gId, grp]) => {
+      grp.items.forEach((it) => prevItemsByKey.set(`${gId}:${it.id}`, it));
+    });
+
+    const changedSellStockPrices: Record<string, number> = {};
+    const changedRewardBuybackPrices: Record<string, number> = {};
+
+    Object.entries(nextGroups).forEach(([gId, grp]) => {
+      grp.items.forEach((it) => {
+        const prev = prevItemsByKey.get(`${gId}:${it.id}`);
+        const cleanPrice = Math.max(0, Math.round(Number(it.price) || 0));
+        const prevPrice = prev ? Math.max(0, Math.round(Number(prev.price) || 0)) : undefined;
+
+        if (it.tradeType === 'sell') {
+          const stockKey = resolveCatalogItemStockKey(it);
+          const prevStockKey = prev ? resolveCatalogItemStockKey(prev) : null;
+          if (
+            stockKey &&
+            ((prevPrice !== undefined && prevPrice !== cleanPrice) ||
+              (!prev && cleanPrice > 0) ||
+              prevStockKey !== stockKey)
+          ) {
+            changedSellStockPrices[stockKey] = cleanPrice;
+          }
+        } else if (it.tradeType === 'buyback') {
+          const rewardKey = CATALOG_BUYBACK_ID_TO_REWARD_KEY[it.id];
+          if (rewardKey && (prevPrice === undefined || prevPrice !== cleanPrice)) {
+            changedRewardBuybackPrices[rewardKey] = cleanPrice;
+          }
+        }
+      });
+    });
+
+    // Propagate any changed stockKey price to sibling catalog items sharing that stockKey
+    let syncedGroups = nextGroups;
+    if (Object.keys(changedSellStockPrices).length > 0) {
+      const normalized: CatalogGroupsMap = {};
+      Object.entries(nextGroups).forEach(([gId, grp]) => {
+        let grpChanged = false;
+        const nextItems = grp.items.map((it) => {
+          if (it.tradeType !== 'sell') return it;
+          const stockKey = resolveCatalogItemStockKey(it);
+          if (stockKey && changedSellStockPrices[stockKey] !== undefined) {
+            const targetPrice = changedSellStockPrices[stockKey];
+            if (Math.round(Number(it.price) || 0) !== targetPrice) {
+              grpChanged = true;
+              return { ...it, price: targetPrice };
+            }
+          }
+          return it;
+        });
+        normalized[gId] = grpChanged ? { ...grp, items: nextItems } : grp;
+      });
+      syncedGroups = normalized;
+
+      setInventoryPrices((prev) => ({
+        ...prev,
+        ...changedSellStockPrices,
+      }));
+      void saveInventoryPricesBatch(authUser.uid, changedSellStockPrices).catch((err) =>
+        setSyncError(err instanceof Error ? err : new Error(String(err)))
+      );
+    }
+
+    if (Object.keys(changedRewardBuybackPrices).length > 0) {
+      const rewardPatch: Record<string, RewardStockEntry> = {};
+      Object.entries(changedRewardBuybackPrices).forEach(([rKey, newVal]) => {
+        const itemRef = REWARD_ITEMS.find((i) => i.key === rKey);
+        const existing = rewardStocks[rKey];
+        rewardPatch[rKey] = {
+          qty: Math.max(0, Number(existing?.qty) || 0),
+          val: newVal !== undefined ? newVal : itemRef?.defaultVal || 0,
+        };
+      });
+      setRewardStocks((prev) => ({
+        ...prev,
+        ...rewardPatch,
+      }));
+      void saveRewardPricesBatch(authUser.uid, rewardPatch).catch((err) =>
+        setSyncError(err instanceof Error ? err : new Error(String(err)))
+      );
+    }
+
+    setCatalogGroups(syncedGroups);
+    void saveCatalogGroups(authUser.uid, syncedGroups).catch((err) =>
       setSyncError(err instanceof Error ? err : new Error(String(err)))
     );
   };
@@ -1876,7 +2609,8 @@ export default function App() {
       if (qty <= 0) return;
 
       totalUnits += qty;
-      totalCost += qty * Math.max(0, Number(item.price) || 0);
+      const unitPrice = resolveCatalogSellItemPrice(item, inventoryPrices);
+      totalCost += qty * unitPrice;
 
       let targetStockKey: string | null = null;
       if (item.linkedGearKey && INVENTORY_ITEMS.some((inv) => inv.key === item.linkedGearKey)) {
@@ -2236,11 +2970,12 @@ export default function App() {
 
   const handleUpdateRewardValue = (key: string, val: number) => {
     if (readonly || !authUser) return;
+    const cleanVal = Math.max(0, Math.round(Number(val) || 0));
     const itemRef = REWARD_ITEMS.find((i) => i.key === key);
     const existing = rewardStocks[key] || { qty: 0, val: itemRef ? itemRef.defaultVal : 200 };
     const nextEntry = {
       ...existing,
-      val: Math.max(0, val),
+      val: cleanVal,
     };
     setRewardStocks((prev) => ({
       ...prev,
@@ -2249,6 +2984,30 @@ export default function App() {
     void saveRewardItem(authUser.uid, key, nextEntry).catch((err) =>
       setSyncError(err instanceof Error ? err : new Error(String(err)))
     );
+
+    const buybackItemId = REWARD_KEY_TO_CATALOG_BUYBACK_ID[key];
+    if (buybackItemId) {
+      let catalogChanged = false;
+      const nextGroups: CatalogGroupsMap = {};
+      Object.entries(catalogGroups).forEach(([gId, grp]) => {
+        let grpChanged = false;
+        const nextItems = grp.items.map((it) => {
+          if (it.id === buybackItemId && Math.round(Number(it.price) || 0) !== cleanVal) {
+            grpChanged = true;
+            catalogChanged = true;
+            return { ...it, price: cleanVal };
+          }
+          return it;
+        });
+        nextGroups[gId] = grpChanged ? { ...grp, items: nextItems } : grp;
+      });
+      if (catalogChanged) {
+        setCatalogGroups(nextGroups);
+        void saveCatalogGroups(authUser.uid, nextGroups).catch((err) =>
+          setSyncError(err instanceof Error ? err : new Error(String(err)))
+        );
+      }
+    }
   };
 
   const handleSellRewards = (
@@ -2318,12 +3077,15 @@ export default function App() {
   const handleApplyOfficialRewardPrices = () => {
     if (readonly || !authUser) return;
     const patch: Record<string, RewardStockEntry> = {};
+    const officialCatalogById = new Map<string, number>();
     REWARD_ITEMS.forEach((item) => {
       const existing = rewardStocks[item.key];
       patch[item.key] = {
         qty: Math.max(0, Number(existing?.qty) || 0),
         val: item.defaultVal,
       };
+      const catId = REWARD_KEY_TO_CATALOG_BUYBACK_ID[item.key];
+      if (catId) officialCatalogById.set(catId, item.defaultVal);
     });
     setRewardStocks((prev) => ({
       ...prev,
@@ -2336,6 +3098,28 @@ export default function App() {
       .catch((err) =>
         setSyncError(err instanceof Error ? err : new Error(String(err)))
       );
+
+    let catalogChanged = false;
+    const nextGroups: CatalogGroupsMap = {};
+    Object.entries(catalogGroups).forEach(([gId, grp]) => {
+      let grpChanged = false;
+      const nextItems = grp.items.map((it) => {
+        const officialPrice = officialCatalogById.get(it.id);
+        if (officialPrice !== undefined && Math.round(Number(it.price) || 0) !== officialPrice) {
+          grpChanged = true;
+          catalogChanged = true;
+          return { ...it, price: officialPrice };
+        }
+        return it;
+      });
+      nextGroups[gId] = grpChanged ? { ...grp, items: nextItems } : grp;
+    });
+    if (catalogChanged) {
+      setCatalogGroups(nextGroups);
+      void saveCatalogGroups(authUser.uid, nextGroups).catch((err) =>
+        setSyncError(err instanceof Error ? err : new Error(String(err)))
+      );
+    }
   };
 
   const handleUpdateWeaponsLoss = (val: number) => {
@@ -2511,6 +3295,315 @@ export default function App() {
     } catch (err) {
       setSyncError(err instanceof Error ? err : new Error(String(err)));
     }
+  };
+
+  const handleSaveDiscordConfig = async (nextConfig: DiscordGazetteConfig) => {
+    if (readonly || !authUser) return;
+    await saveDiscordConfig(authUser.uid, nextConfig);
+    setDiscordConfig(nextConfig);
+  };
+
+  const handleUpdateCurrentPayroll = (nextPayroll: CurrentWeekPayrollState) => {
+    if (readonly || !authUser) return;
+    const nextHistory: HistoryState = {
+      ...historyState,
+      currentPayroll: nextPayroll,
+    };
+    setHistoryState(nextHistory);
+    void saveHistoryState(authUser.uid, nextHistory).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+  };
+
+  const handleSettleSundayPayroll = (debitAccount: 'none' | 'legal' | 'illegal') => {
+    if (readonly || !authUser) return;
+    const currentWeekKey = missionStates.__week || isoDate(currentWeekStart());
+    const cp = historyState.currentPayroll;
+    const isSameWeek = cp.week === currentWeekKey;
+    const calc = computeSundayPayroll({
+      members: hierMembers,
+      missionStates,
+      scheduleMeta,
+      weaponsLossAmount,
+      inventoryPrices,
+      catalogGroups,
+      cartelPercent: isSameWeek ? cp.cartelPercent : 70,
+      basis: isSameWeek ? cp.basis : 'net_cartel',
+      paidMemberIds: isSameWeek ? cp.paidMemberIds : [],
+    });
+
+    if (calc.payrollPoolAmount <= 0) {
+      showToast('Aucune paie à distribuer pour cette semaine.', { variant: 'warning' });
+      return;
+    }
+
+    const eligibleIds = calc.rows.filter((r) => r.payrollAmount > 0).map((r) => r.memberId);
+    const mergedPaidIds = Array.from(
+      new Set([...(isSameWeek ? cp.paidMemberIds : []), ...eligibleIds])
+    );
+
+    let actualDebited = 0;
+    let shortfall = 0;
+    let treasuryPatch: Partial<TreasuryMoney> | undefined;
+    if (debitAccount !== 'none') {
+      const curBal = Math.max(0, Number(treasuryMoney[debitAccount]) || 0);
+      actualDebited = Math.min(curBal, calc.payrollPoolAmount);
+      shortfall = Math.max(0, calc.payrollPoolAmount - curBal);
+      const nextBal = Math.max(0, curBal - calc.payrollPoolAmount);
+      treasuryPatch = { [debitAccount]: nextBal };
+      setTreasuryMoney((prev) => ({ ...prev, [debitAccount]: nextBal }));
+    }
+
+    const actorName = authUser.displayName || authUser.email?.split('@')[0] || 'Éditeur';
+    const nextHistory: HistoryState = {
+      ...historyState,
+      currentPayroll: {
+        week: currentWeekKey,
+        cartelPercent: calc.cartelPercent,
+        membersPercent: calc.membersPercent,
+        basis: calc.basis,
+        paidMemberIds: mergedPaidIds,
+        settled: true,
+        settledAt: new Date().toISOString().slice(0, 40),
+        settledBy: actorName.slice(0, 80),
+        settledAmount: calc.payrollPoolAmount,
+        debitAccount,
+        debitAmount: actualDebited,
+      },
+    };
+    setHistoryState(nextHistory);
+    void savePayrollSettlementWithTreasury(authUser.uid, nextHistory, treasuryPatch).catch(
+      (err) => setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+
+    const debitLabel = debitAccount === 'legal' ? 'Argent Légal' : 'Argent Sale';
+    if (debitAccount !== 'none' && shortfall > 0) {
+      showToast(
+        `Paye validée (${formatMoney(calc.payrollPoolAmount)}) · ${debitLabel} à 0 $ (manquait ${formatMoney(shortfall)})`,
+        { variant: 'warning' }
+      );
+    } else if (debitAccount !== 'none' && actualDebited > 0) {
+      showToast(
+        `Paye du dimanche validée (${formatMoney(calc.payrollPoolAmount)}) · -${formatMoney(actualDebited)} ${debitLabel} !`
+      );
+    } else {
+      showToast(`Paye du dimanche validée (${formatMoney(calc.payrollPoolAmount)}) !`);
+    }
+  };
+
+  const handleCancelPayrollSettlement = () => {
+    if (readonly || !authUser) return;
+    const cp = historyState.currentPayroll;
+    if (!cp.settled) return;
+
+    let treasuryPatch: Partial<TreasuryMoney> | undefined;
+    if (cp.debitAccount !== 'none' && cp.debitAmount > 0) {
+      const curBal = Math.max(0, Number(treasuryMoney[cp.debitAccount]) || 0);
+      const refundedBal = curBal + cp.debitAmount;
+      treasuryPatch = { [cp.debitAccount]: refundedBal };
+      setTreasuryMoney((prev) => ({ ...prev, [cp.debitAccount]: refundedBal }));
+    }
+
+    const nextHistory: HistoryState = {
+      ...historyState,
+      currentPayroll: {
+        ...cp,
+        settled: false,
+        settledAt: '',
+        settledBy: '',
+        settledAmount: 0,
+        debitAccount: 'none',
+        debitAmount: 0,
+      },
+    };
+    setHistoryState(nextHistory);
+    void savePayrollSettlementWithTreasury(authUser.uid, nextHistory, treasuryPatch).catch(
+      (err) => setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+
+    showToast(
+      cp.debitAccount !== 'none' && cp.debitAmount > 0
+        ? `Validation annulée · +${formatMoney(cp.debitAmount)} remboursé en caisse.`
+        : 'Validation de paye annulée.'
+    );
+  };
+
+  const handleArchiveCurrentWeek = () => {
+    if (readonly || !authUser) return;
+    const currentWeekKey = missionStates.__week || isoDate(currentWeekStart());
+    const archiveId = currentWeekKey.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) || 'week';
+    const actorName = authUser.displayName || authUser.email?.split('@')[0] || 'Éditeur';
+    const record = buildArchiveRecordFromWeek({
+      archiveId,
+      archivedBy: actorName,
+      missionStates,
+      scheduleMeta,
+      weaponsLossAmount,
+      members: hierMembers,
+      inventoryPrices,
+      catalogGroups,
+      currentPayroll: historyState.currentPayroll,
+    });
+    const nextHistory: HistoryState = {
+      ...historyState,
+      archives: {
+        ...historyState.archives,
+        [archiveId]: record,
+      },
+    };
+    setHistoryState(nextHistory);
+    void saveHistoryState(authUser.uid, nextHistory).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+    showToast(`Semaine ${record.label} archivée dans les Semaines Précédentes !`);
+  };
+
+  const handleToggleArchivedMemberPaid = (archiveId: string, memberId: string) => {
+    if (readonly || !authUser) return;
+    const rec = historyState.archives[archiveId];
+    if (!rec) return;
+    const nextRows = rec.payroll.rows.map((r) =>
+      r.memberId === memberId ? { ...r, paid: !r.paid } : r
+    );
+    const nextHistory: HistoryState = {
+      ...historyState,
+      archives: {
+        ...historyState.archives,
+        [archiveId]: {
+          ...rec,
+          payroll: {
+            ...rec.payroll,
+            rows: nextRows,
+          },
+        },
+      },
+    };
+    setHistoryState(nextHistory);
+    void saveHistoryState(authUser.uid, nextHistory).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+  };
+
+  const handleSettleArchivedPayroll = (
+    archiveId: string,
+    debitAccount: 'none' | 'legal' | 'illegal'
+  ) => {
+    if (readonly || !authUser) return;
+    const rec = historyState.archives[archiveId];
+    if (!rec || rec.payroll.settled || rec.payroll.payrollPoolAmount <= 0) return;
+
+    const pool = rec.payroll.payrollPoolAmount;
+    let actualDebited = 0;
+    let shortfall = 0;
+    let treasuryPatch: Partial<TreasuryMoney> | undefined;
+    if (debitAccount !== 'none') {
+      const curBal = Math.max(0, Number(treasuryMoney[debitAccount]) || 0);
+      actualDebited = Math.min(curBal, pool);
+      shortfall = Math.max(0, pool - curBal);
+      const nextBal = Math.max(0, curBal - pool);
+      treasuryPatch = { [debitAccount]: nextBal };
+      setTreasuryMoney((prev) => ({ ...prev, [debitAccount]: nextBal }));
+    }
+
+    const actorName = authUser.displayName || authUser.email?.split('@')[0] || 'Éditeur';
+    const nextHistory: HistoryState = {
+      ...historyState,
+      archives: {
+        ...historyState.archives,
+        [archiveId]: {
+          ...rec,
+          payroll: {
+            ...rec.payroll,
+            settled: true,
+            settledAt: new Date().toISOString().slice(0, 40),
+            settledBy: actorName.slice(0, 80),
+            debitAccount,
+            debitAmount: actualDebited,
+            rows: rec.payroll.rows.map((r) =>
+              r.payrollAmount > 0 ? { ...r, paid: true } : r
+            ),
+          },
+        },
+      },
+    };
+    setHistoryState(nextHistory);
+    void savePayrollSettlementWithTreasury(authUser.uid, nextHistory, treasuryPatch).catch(
+      (err) => setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+
+    const debitLabel = debitAccount === 'legal' ? 'Argent Légal' : 'Argent Sale';
+    if (debitAccount !== 'none' && shortfall > 0) {
+      showToast(
+        `Paye archivée validée (${formatMoney(pool)}) · ${debitLabel} à 0 $ (manquait ${formatMoney(shortfall)})`,
+        { variant: 'warning' }
+      );
+    } else if (debitAccount !== 'none' && actualDebited > 0) {
+      showToast(
+        `Paye archivée validée (${formatMoney(pool)}) · -${formatMoney(actualDebited)} ${debitLabel}`
+      );
+    } else {
+      showToast(`Paye archivée validée (${formatMoney(pool)}) !`);
+    }
+  };
+
+  const handleCancelArchivedPayrollSettlement = (archiveId: string) => {
+    if (readonly || !authUser) return;
+    const rec = historyState.archives[archiveId];
+    if (!rec || !rec.payroll.settled) return;
+
+    let treasuryPatch: Partial<TreasuryMoney> | undefined;
+    if (rec.payroll.debitAccount !== 'none' && rec.payroll.debitAmount > 0) {
+      const curBal = Math.max(0, Number(treasuryMoney[rec.payroll.debitAccount]) || 0);
+      const refundedBal = curBal + rec.payroll.debitAmount;
+      treasuryPatch = { [rec.payroll.debitAccount]: refundedBal };
+      setTreasuryMoney((prev) => ({
+        ...prev,
+        [rec.payroll.debitAccount]: refundedBal,
+      }));
+    }
+
+    const nextHistory: HistoryState = {
+      ...historyState,
+      archives: {
+        ...historyState.archives,
+        [archiveId]: {
+          ...rec,
+          payroll: {
+            ...rec.payroll,
+            settled: false,
+            settledAt: '',
+            settledBy: '',
+            debitAccount: 'none',
+            debitAmount: 0,
+          },
+        },
+      },
+    };
+    setHistoryState(nextHistory);
+    void savePayrollSettlementWithTreasury(authUser.uid, nextHistory, treasuryPatch).catch(
+      (err) => setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+    showToast(
+      rec.payroll.debitAccount !== 'none' && rec.payroll.debitAmount > 0
+        ? `Validation annulée · +${formatMoney(rec.payroll.debitAmount)} remboursé en caisse.`
+        : 'Validation de paye archivée annulée.'
+    );
+  };
+
+  const handleDeleteWeekArchive = (archiveId: string) => {
+    if (readonly || !authUser) return;
+    if (!historyState.archives[archiveId]) return;
+    const nextArchives = { ...historyState.archives };
+    delete nextArchives[archiveId];
+    const nextHistory: HistoryState = {
+      ...historyState,
+      archives: nextArchives,
+    };
+    setHistoryState(nextHistory);
+    void saveHistoryState(authUser.uid, nextHistory).catch((err) =>
+      setSyncError(err instanceof Error ? err : new Error(String(err)))
+    );
+    showToast('Archive supprimée de l’historique.');
   };
 
   const handleCopyReport = async () => {
@@ -2790,6 +3883,14 @@ export default function App() {
               </button>
               <button
                 type="button"
+                onClick={() => setCurrentTab('history')}
+                className={tabBtnClass('history')}
+              >
+                <Banknote className="w-3.5 h-3.5" />
+                Paye &amp; Archives
+              </button>
+              <button
+                type="button"
                 onClick={() => setCurrentTab('ranking')}
                 className={tabBtnClass('ranking')}
               >
@@ -2812,6 +3913,17 @@ export default function App() {
                 <Camera className="w-3.5 h-3.5" />
                 Album
               </button>
+              <a
+                href="https://sunnycom.tech/feed"
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Ouvrir SunnyCom (Feed RP)"
+                className="px-3 py-2 rounded-lg text-xs font-bold bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-200 hover:text-white border border-emerald-500/45 hover:border-emerald-400 transition flex items-center gap-1.5 shadow-sm whitespace-nowrap shrink-0"
+              >
+                <Globe className="w-3.5 h-3.5 text-emerald-400" />
+                SunnyCom
+                <ExternalLink className="w-3 h-3 opacity-80" />
+              </a>
               <button
                 type="button"
                 onClick={handleCopyReport}
@@ -2819,6 +3931,15 @@ export default function App() {
               >
                 <ClipboardCopy className="w-3.5 h-3.5" />
                 Copier Bilan
+              </button>
+              <button
+                type="button"
+                onClick={() => setGazetteModalOpen(true)}
+                title="Aperçu, PNG et envoi salon Discord de la Gazette quotidienne"
+                className="px-3 py-2 rounded-lg text-xs font-bold bg-charcoal hover:bg-slateDark text-gold-light border border-gold/45 hover:border-gold transition flex items-center gap-1.5 shadow-sm cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <Newspaper className="w-3.5 h-3.5 text-gold" />
+                Gazette Discord
               </button>
               {isUnlocked && (
                 <button
@@ -2986,6 +4107,7 @@ export default function App() {
             onOpenMissionValidation={handleOpenMissionValidation}
             onOpenCatalog={handleOpenCatalog}
             onGoToOrdersWithGroup={handleGoToOrdersWithGroup}
+            onOpenGazette={() => setGazetteModalOpen(true)}
           />
         )}
 
@@ -3073,6 +4195,7 @@ export default function App() {
             onGoToOrdersWithGroup={handleGoToOrdersWithGroup}
             onSaveCatalogGroups={handleSaveCatalogGroups}
             inventoryStock={inventoryStock}
+            inventoryPrices={inventoryPrices}
             rewardStocks={rewardStocks}
             treasuryMoney={treasuryMoney}
             readonly={readonly}
@@ -3108,9 +4231,34 @@ export default function App() {
             weaponsStock={weaponsStock}
             weaponsLossAmount={weaponsLossAmount}
             inventoryPrices={inventoryPrices}
+            catalogGroups={catalogGroups}
             readonly={readonly}
             onUpdateWeaponsLoss={handleUpdateWeaponsLoss}
             onLoseWeaponGlobal={handleLoseWeaponGlobal}
+            onOpenPayrollHistory={() => setCurrentTab('history')}
+          />
+        )}
+
+        {currentTab === 'history' && (
+          <WeeklyHistoryPayrollView
+            missionStates={missionStates}
+            scheduleMeta={scheduleMeta}
+            members={hierMembers}
+            weaponsLossAmount={weaponsLossAmount}
+            inventoryPrices={inventoryPrices}
+            catalogGroups={catalogGroups}
+            treasuryMoney={treasuryMoney}
+            historyState={historyState}
+            readonly={readonly}
+            onUpdateCurrentPayroll={handleUpdateCurrentPayroll}
+            onSettleSundayPayroll={handleSettleSundayPayroll}
+            onCancelPayrollSettlement={handleCancelPayrollSettlement}
+            onArchiveCurrentWeek={handleArchiveCurrentWeek}
+            onToggleArchivedMemberPaid={handleToggleArchivedMemberPaid}
+            onSettleArchivedPayroll={handleSettleArchivedPayroll}
+            onCancelArchivedPayrollSettlement={handleCancelArchivedPayrollSettlement}
+            onDeleteWeekArchive={handleDeleteWeekArchive}
+            onShowToast={(msg) => showToast(msg)}
           />
         )}
 
@@ -3121,6 +4269,7 @@ export default function App() {
             weaponsStock={weaponsStock}
             memberRankings={memberRankings}
             inventoryPrices={inventoryPrices}
+            catalogGroups={catalogGroups}
             readonly={readonly}
             onUpdateMemberRankings={handleUpdateMemberRankings}
             onShowToast={showToast}
@@ -3170,8 +4319,41 @@ export default function App() {
 
       <ResetModal
         open={resetModalOpen}
+        hasWeekActivity={
+          kpis.successCount + kpis.failCount > 0 ||
+          weaponsLossAmount > 0 ||
+          historyState.currentPayroll.settled
+        }
         onClose={() => setResetModalOpen(false)}
         onConfirm={handleConfirmResetWeek}
+      />
+
+      <DiscordGazetteModal
+        open={gazetteModalOpen}
+        readonly={readonly}
+        senderName={authUser.displayName || authUser.email?.split('@')[0] || 'Éditeur'}
+        getIdToken={() => authUser.getIdToken()}
+        discordConfig={discordConfig}
+        hasEnvFallback={hasDiscordEnvFallback}
+        missionStates={missionStates}
+        scheduleMeta={scheduleMeta}
+        inventoryStock={inventoryStock}
+        inventoryPrices={inventoryPrices}
+        weaponsStock={weaponsStock}
+        rewardStocks={rewardStocks}
+        treasuryMoney={treasuryMoney}
+        weaponsLossAmount={weaponsLossAmount}
+        hierMembers={hierMembers}
+        memberRankings={memberRankings}
+        catalogGroups={catalogGroups}
+        albumState={albumState}
+        onClose={() => setGazetteModalOpen(false)}
+        onSaveConfig={handleSaveDiscordConfig}
+        onRequestUnlock={() => {
+          setGazetteModalOpen(false);
+          setAuthModalOpen(true);
+        }}
+        onShowToast={(msg) => showToast(msg)}
       />
 
       <MissionValidationModal

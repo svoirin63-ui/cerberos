@@ -1,6 +1,8 @@
 import React, { useMemo, useState } from 'react';
+import { Banknote } from 'lucide-react';
 import { HIER_UNITS, WEEKLY_SCHEDULE } from '@/src/data/cartelData';
 import type {
+  CatalogGroupsMap,
   HierarchyMember,
   InventoryPrices,
   MissionScheduleMeta,
@@ -27,9 +29,11 @@ interface AccountingViewProps {
   weaponsStock: WeaponsStock;
   weaponsLossAmount: number;
   inventoryPrices?: InventoryPrices;
+  catalogGroups?: CatalogGroupsMap;
   readonly: boolean;
   onUpdateWeaponsLoss: (val: number) => void;
   onLoseWeaponGlobal: (weaponId: string) => void;
+  onOpenPayrollHistory?: () => void;
 }
 
 export const AccountingView: React.FC<AccountingViewProps> = ({
@@ -39,9 +43,11 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   weaponsStock,
   weaponsLossAmount,
   inventoryPrices,
+  catalogGroups,
   readonly,
   onUpdateWeaponsLoss,
   onLoseWeaponGlobal,
+  onOpenPayrollHistory,
 }) => {
   const [selectedWeaponId, setSelectedWeaponId] = useState('');
   const stockedWeapons = useMemo(
@@ -74,7 +80,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
     let gains = 0;
 
     dayObj.missions.forEach((m) => {
-      const f = missionFin(m, missionStates, inventoryPrices);
+      const f = missionFin(m, missionStates, inventoryPrices, catalogGroups);
       if (f.success) ok++;
       if (f.fail) ko++;
       cost += f.cost;
@@ -106,7 +112,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   const playerStats = new Map<string, { ok: number; ko: number }>();
   WEEKLY_SCHEDULE.forEach((dayObj) => {
     dayObj.missions.forEach((m) => {
-      const f = missionFin(m, missionStates, inventoryPrices);
+      const f = missionFin(m, missionStates, inventoryPrices, catalogGroups);
       if (!f.done) return;
       const entry = getMissionEntry(missionStates, m.id);
       const players = Array.isArray(entry.players) ? entry.players : [];
@@ -146,7 +152,17 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
               Calcul automatique : matériel utilisé par chaque mission (réussie ou échouée) + pertes ajoutées, moins les gains des missions réussies.
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            {onOpenPayrollHistory && (
+              <button
+                type="button"
+                onClick={onOpenPayrollHistory}
+                className="px-3.5 py-2 rounded-xl text-xs font-bold bg-gold/15 hover:bg-gold hover:text-obsidian text-gold-light border border-gold/45 transition inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <Banknote className="w-3.5 h-3.5" />
+                Paye du Dimanche (70/30) &amp; Archives
+              </button>
+            )}
             <div className="text-right">
               <span className="text-[10px] uppercase font-bold text-zinc-500 block">
                 Bénéfice Net Global

@@ -17,8 +17,18 @@ import {
   type EminenceMissionRequirement,
 } from '@/src/data/eminenceMissions';
 import { INVENTORY_ITEMS } from '@/src/data/cartelData';
-import type { CatalogGroup, CatalogItem, InventoryStock } from '@/src/types/cartel';
-import { formatMoney, getCatalogStockKey } from '@/src/utils/finance';
+import type {
+  CatalogGroup,
+  CatalogItem,
+  InventoryPrices,
+  InventoryStock,
+  RewardStocks,
+} from '@/src/types/cartel';
+import {
+  formatMoney,
+  getCatalogStockKey,
+  resolveCatalogSellItemPrice,
+} from '@/src/utils/finance';
 
 type MissionFilterMode = 'ALL' | 'major' | 'standard' | 'singles';
 
@@ -26,6 +36,8 @@ interface EminenceMissionCatalogProps {
   group: CatalogGroup;
   cart: Record<string, number>;
   inventoryStock: InventoryStock;
+  inventoryPrices?: InventoryPrices;
+  rewardStocks?: RewardStocks;
   onAdjustItem: (itemId: string, delta: number) => void;
   readonly: boolean;
   onEditItem?: (item: CatalogItem) => void;
@@ -59,6 +71,8 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
   group,
   cart,
   inventoryStock,
+  inventoryPrices,
+  rewardStocks,
   onAdjustItem,
   readonly,
   onEditItem,
@@ -255,11 +269,15 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
                 let missingCount = 0;
                 let missingCost = 0;
                 let allReqInStock = mission.requirements.length > 0;
+                const packPrice = packItem
+                  ? resolveCatalogSellItemPrice(packItem, inventoryPrices)
+                  : 0;
 
                 const resolvedReqs = mission.requirements
                   .map((req) => {
                     const comp = itemsById.get(req.itemId);
                     if (!comp) return null;
+                    const compPrice = resolveCatalogSellItemPrice(comp, inventoryPrices);
                     const compStock = getStockInfo(comp, inventoryStock);
                     const compCart = Math.max(0, Math.floor(Number(cart[comp.id]) || 0));
                     const stillNeeded = Math.max(0, req.qty - compStock.stockQty - compCart);
@@ -268,10 +286,10 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
                     }
                     if (stillNeeded > 0) {
                       missingCount += stillNeeded;
-                      missingCost += stillNeeded * comp.price;
+                      missingCost += stillNeeded * compPrice;
                     }
-                    singleTotal += req.qty * comp.price;
-                    return { req, comp, compStock, compCart };
+                    singleTotal += req.qty * compPrice;
+                    return { req, comp, compPrice, compStock, compCart };
                   })
                   .filter(
                     (
@@ -279,6 +297,7 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
                     ): x is {
                       req: EminenceMissionRequirement;
                       comp: CatalogItem;
+                      compPrice: number;
                       compStock: { stockQty: number; label: string | null };
                       compCart: number;
                     } => x !== null
@@ -287,8 +306,8 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
                 const hasCartForMission =
                   packQty > 0 || resolvedReqs.some((r) => r.compCart > 0);
                 const packSavings =
-                  packItem && singleTotal > packItem.price
-                    ? singleTotal - packItem.price
+                  packItem && singleTotal > packPrice
+                    ? singleTotal - packPrice
                     : 0;
 
                 return (
@@ -348,7 +367,7 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
                         <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
                           <div className="text-right mr-1 tabular-nums">
                             <div className="font-mono text-sm font-extrabold text-gold">
-                              {formatMoney(packItem.price)}
+                              {formatMoney(packPrice)}
                             </div>
                             {packSavings > 0 && (
                               <div className="text-[10px] font-mono text-emerald-300">
@@ -395,7 +414,7 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
                         <div className="text-[11px] text-zinc-400 flex items-center justify-between gap-2 px-1 py-1">
                           <span>Kit dédié complet fourni directement dans le Pack ci-dessus.</span>
                           <span className="font-mono text-gold-light font-semibold">
-                            {packItem ? formatMoney(packItem.price) : ''}
+                            {packItem ? formatMoney(packPrice) : ''}
                           </span>
                         </div>
                       ) : (
@@ -425,7 +444,7 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
                           </div>
 
                           <div className="divide-y divide-bronze/20 border border-bronze/30 rounded-lg bg-charcoal/40">
-                            {resolvedReqs.map(({ req, comp, compStock, compCart }) => {
+                            {resolvedReqs.map(({ req, comp, compPrice, compStock, compCart }) => {
                               const enoughInVault = compStock.stockQty >= req.qty;
                               return (
                                 <div
@@ -443,7 +462,7 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
                                         {comp.name}
                                       </span>
                                       <span className="font-mono text-[11px] text-zinc-400">
-                                        ({formatMoney(comp.price)}/u)
+                                        ({formatMoney(compPrice)}/u)
                                       </span>
                                     </div>
                                     <div className="text-[10px] mt-0.5 flex items-center gap-2">
@@ -482,7 +501,7 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
                                       type="button"
                                       onClick={() => onAdjustItem(comp.id, 1)}
                                       className="px-2 h-6 rounded bg-gunmetal hover:bg-gold hover:text-obsidian text-zinc-100 text-[11px] font-bold flex items-center justify-center cursor-pointer"
-                                      title={`Ajouter 1× ${comp.name} seul (${formatMoney(comp.price)})`}
+                                      title={`Ajouter 1× ${comp.name} seul (${formatMoney(compPrice)})`}
                                     >
                                       +1
                                     </button>
@@ -518,6 +537,7 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
             {keyItems.map((it) => {
               const qty = Math.max(0, Math.floor(Number(cart[it.id]) || 0));
               const stock = getStockInfo(it, inventoryStock);
+              const unitPrice = resolveCatalogSellItemPrice(it, inventoryPrices);
               return (
                 <div
                   key={it.id}
@@ -529,7 +549,7 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
                     <div className="font-semibold text-white truncate">{it.name}</div>
                     <div className="text-[10px] text-zinc-400 flex items-center gap-2">
                       <span className="font-mono text-gold font-bold">
-                        {formatMoney(it.price)}
+                        {formatMoney(unitPrice)}
                       </span>
                       <span
                         className={`font-mono ${
@@ -596,6 +616,7 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
               {utilityItems.map((it) => {
                 const qty = Math.max(0, Math.floor(Number(cart[it.id]) || 0));
                 const stock = getStockInfo(it, inventoryStock);
+                const unitPrice = resolveCatalogSellItemPrice(it, inventoryPrices);
                 return (
                   <div
                     key={it.id}
@@ -607,7 +628,7 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
                       <div className="font-semibold text-white truncate">{it.name}</div>
                       <div className="text-[10px] text-zinc-400 flex items-center gap-2">
                         <span className="font-mono text-gold font-bold">
-                          {formatMoney(it.price)}
+                          {formatMoney(unitPrice)}
                         </span>
                         <span
                           className={`font-mono ${
@@ -676,7 +697,11 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
               </div>
               <div className="text-right shrink-0">
                 <div className="font-mono text-base font-extrabold text-emerald-300 tabular-nums">
-                  {formatMoney(whiskeyItem.price)}
+                  {formatMoney(
+                    rewardStocks?.whiskey_luxe?.val !== undefined
+                      ? Math.max(0, Number(rewardStocks.whiskey_luxe.val) || 0)
+                      : whiskeyItem.price
+                  )}
                 </div>
                 <div className="text-[10px] text-zinc-400">par bouteille</div>
               </div>
@@ -695,6 +720,9 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
             {customExtraItems.map((it) => {
               const isSell = it.tradeType === 'sell';
               const qty = isSell ? Math.max(0, Math.floor(Number(cart[it.id]) || 0)) : 0;
+              const unitPrice = isSell
+                ? resolveCatalogSellItemPrice(it, inventoryPrices)
+                : Math.max(0, Number(it.price) || 0);
               return (
                 <div
                   key={it.id}
@@ -705,7 +733,7 @@ export const EminenceMissionCatalog: React.FC<EminenceMissionCatalogProps> = ({
                     <div className="text-[11px] text-zinc-400">
                       {isSell ? 'Vend' : 'Rachète'} ·{' '}
                       <span className="font-mono text-gold font-bold">
-                        {formatMoney(it.price)}
+                        {formatMoney(unitPrice)}
                       </span>
                     </div>
                   </div>

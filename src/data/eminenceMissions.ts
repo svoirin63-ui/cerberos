@@ -52,7 +52,7 @@ export const EMINENCE_MISSIONS: EminenceMissionBlueprint[] = [
     major: false,
     planningGearKey: 'frg',
     packItemId: 'em_pack_04_fourgon',
-    summary: 'Clé fourgon / Perceuse de forage',
+    summary: 'Clé fourgon blindé uniquement',
     requirements: [{ itemId: 'em_cle_fourgon', qty: 1 }],
   },
   {
@@ -84,17 +84,6 @@ export const EMINENCE_MISSIONS: EminenceMissionBlueprint[] = [
     packItemId: 'em_pack_07_yacht',
     summary: 'Clé Yacht + utilitaires',
     requirements: [{ itemId: 'em_cle_yacht', qty: 1 }],
-  },
-  {
-    code: '08',
-    title: 'Braquage de conteneurs',
-    major: false,
-    packItemId: 'em_pack_08_conteneurs',
-    summary: 'Clé munition + Meuleuse',
-    requirements: [
-      { itemId: 'em_cle_munition', qty: 1 },
-      { itemId: 'em_meuleuse', qty: 1 },
-    ],
   },
   {
     code: '09',
@@ -186,7 +175,6 @@ export const EMINENCE_KEY_ITEM_IDS_LIST = [
   'em_cle_fleeca',
   'em_cle_paleto',
   'em_cle_pacific',
-  'em_cle_munition',
   'em_cle_bobcat',
   'em_cle_fourgon',
   'em_cle_train',

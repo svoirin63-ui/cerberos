@@ -19,9 +19,11 @@ import type {
   WeaponsStock,
 } from '@/src/types/cartel';
 import {
+  calcUsedGearCost,
   formatMoney,
-  getInventoryItemPrice,
+  formatSigned,
   getMissionCost,
+  getMissionGearLabel,
   getStatus,
   getWeaponHolderName,
 } from '@/src/utils/finance';
@@ -69,12 +71,13 @@ function getPreviousUsedGear(
     });
     if (Object.keys(clean).length > 0) return clean;
   }
-  if (
-    entry.gearConsumed &&
-    mission.gearKey !== 'none' &&
-    INVENTORY_ITEMS.some((i) => i.key === mission.gearKey)
-  ) {
-    return { [mission.gearKey]: 1 };
+  if (entry.gearConsumed && mission.gearKey !== 'none') {
+    if (INVENTORY_ITEMS.some((i) => i.key === mission.gearKey)) {
+      return { [mission.gearKey]: 1 };
+    }
+    if (mission.gearKey === 'amu') {
+      return { cat_em_cle_ammunation: 1 };
+    }
   }
   return {};
 }
@@ -189,7 +192,9 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
     const existingExtra = Math.max(0, Number(entry.extra) || 0);
     const initialOtherLoss = Math.max(0, existingExtra - initLostVal);
     setCashLoss(initialOtherLoss > 0 ? String(initialOtherLoss) : '');
-    setTreasuryDebitAccount('none');
+    setTreasuryDebitAccount(
+      initialOtherLoss > 0 ? entry.cashLossDebitAccount || 'none' : 'none'
+    );
     setPlayers(Array.isArray(entry.players) ? [...entry.players] : []);
   }, [open, mission, initialStatus, entry, inventoryStock, rewardStocks, catalogGroups]);
 
@@ -330,7 +335,10 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
   const weaponsLossVal = lostWeapons.reduce((s, w) => s + Math.max(0, Number(w.value) || 0), 0);
   const parsedCashLoss = Math.max(0, Number(cashLoss) || 0);
   const totalMissionExtra = weaponsLossVal + parsedCashLoss;
-  const missionCost = getMissionCost(mission, inventoryPrices);
+  const usedCostInfo = calcUsedGearCost(usedGear, inventoryPrices, catalogGroups);
+  const missionCost = usedCostInfo.hasItems
+    ? usedCostInfo.cost
+    : getMissionCost(mission, inventoryPrices, catalogGroups);
   const netEstimate = totalMissionGain - missionCost - totalMissionExtra;
 
   const chosenWeaponId =
@@ -504,13 +512,7 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
             </h3>
             <p className="text-xs text-zinc-400 mt-0.5">
               👥 {mission.crims} · ⏱️ {mission.wait} · 📦{' '}
-              {mission.gearKey === 'drg'
-                ? `Clé USB 3.1 (${
-                    getInventoryItemPrice('drg', inventoryPrices) > 0
-                      ? formatMoney(getInventoryItemPrice('drg', inventoryPrices))
-                      : 'Prix à définir'
-                  })`
-                : mission.gearName}
+              {getMissionGearLabel(mission, inventoryPrices, catalogGroups)}
             </p>
           </div>
           <button
@@ -876,6 +878,11 @@ export const MissionValidationModal: React.FC<MissionValidationModalProps> = ({
                 {netEstimate >= 0 ? '+' : '-'}
                 {formatMoney(Math.abs(netEstimate))}
               </span>
+              {players.length > 0 && (
+                <span className="text-[11px] font-normal text-zinc-400 ml-2">
+                  ({formatSigned(Math.round(netEstimate / players.length))} / pers.)
+                </span>
+              )}
             </div>
           </div>
 

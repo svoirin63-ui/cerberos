@@ -63,6 +63,49 @@ service cloud.firestore {
         isValidId(data.updatedBy);
     }
 
+    function isValidDiscordConfig(data) {
+      return data.keys().hasAll([
+          'webhookUrl',
+          'autoEnabled',
+          'sendHour',
+          'sendMinute',
+          'includePhoto',
+          'customMessage',
+          'lastSentDate',
+          'lastSentAt',
+          'lastSentBy',
+          'updatedAt',
+          'updatedBy'
+        ]) &&
+        data.keys().hasOnly([
+          'webhookUrl',
+          'autoEnabled',
+          'sendHour',
+          'sendMinute',
+          'includePhoto',
+          'customMessage',
+          'lastSentDate',
+          'lastSentAt',
+          'lastSentBy',
+          'updatedAt',
+          'updatedBy'
+        ]) &&
+        data.webhookUrl is string &&
+        data.webhookUrl.size() <= 300 &&
+        data.webhookUrl.matches('^$|^https://(discord|discordapp)\\.com/api/webhooks/[0-9]+/[A-Za-z0-9._\\-]+$') &&
+        data.autoEnabled is bool &&
+        data.sendHour is int && data.sendHour >= 0 && data.sendHour <= 23 &&
+        data.sendMinute is int && data.sendMinute >= 0 && data.sendMinute <= 59 &&
+        data.includePhoto is bool &&
+        data.customMessage is string && data.customMessage.size() <= 300 &&
+        data.lastSentDate is string && data.lastSentDate.size() <= 20 &&
+        data.lastSentDate.matches('^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
+        data.lastSentAt is string && data.lastSentAt.size() <= 40 &&
+        data.lastSentBy is string && data.lastSentBy.size() <= 80 &&
+        data.updatedAt is timestamp &&
+        isValidId(data.updatedBy);
+    }
+
     function isValidMember(data) {
       return data.keys().hasAll(['uid', 'displayName', 'role', 'accessCode', 'joinedAt', 'updatedAt']) &&
         data.keys().hasOnly(['uid', 'displayName', 'role', 'accessCode', 'joinedAt', 'updatedAt']) &&
@@ -169,13 +212,23 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidHistoryState(data) {
+      return data.keys().hasAll(['archives', 'currentPayroll', 'updatedAt', 'updatedBy']) &&
+        data.keys().hasOnly(['archives', 'currentPayroll', 'updatedAt', 'updatedBy']) &&
+        data.archives is map && data.archives.size() <= 60 &&
+        data.currentPayroll is map && data.currentPayroll.size() <= 20 &&
+        data.updatedAt is timestamp &&
+        isValidId(data.updatedBy);
+    }
+
     function isValidStateDoc(stateId, data) {
       return (stateId == 'missions' && isValidMissionsState(data)) ||
         (stateId == 'inventory' && isValidInventoryState(data)) ||
         (stateId == 'treasury' && isValidTreasuryState(data)) ||
         (stateId == 'hierarchy' && isValidHierarchyState(data)) ||
         (stateId == 'catalog' && isValidCatalogState(data)) ||
-        (stateId == 'album' && isValidAlbumState(data));
+        (stateId == 'album' && isValidAlbumState(data)) ||
+        (stateId == 'history' && isValidHistoryState(data));
     }
 
     function isValidStateUpdate(stateId, next, prev) {
@@ -193,7 +246,8 @@ service cloud.firestore {
         (stateId == 'treasury' && next.diff(prev).affectedKeys().hasOnly(['legal', 'illegal', 'rewards', 'weaponsLossAmount', 'updatedAt', 'updatedBy'])) ||
         (stateId == 'hierarchy' && next.diff(prev).affectedKeys().hasOnly(['members', 'rankings', 'updatedAt', 'updatedBy'])) ||
         (stateId == 'catalog' && next.diff(prev).affectedKeys().hasOnly(['groups', 'updatedAt', 'updatedBy'])) ||
-        (stateId == 'album' && next.diff(prev).affectedKeys().hasOnly(['photos', 'favorites', 'updatedAt', 'updatedBy']));
+        (stateId == 'album' && next.diff(prev).affectedKeys().hasOnly(['photos', 'favorites', 'updatedAt', 'updatedBy'])) ||
+        (stateId == 'history' && next.diff(prev).affectedKeys().hasOnly(['archives', 'currentPayroll', 'updatedAt', 'updatedBy']));
     }
 
     match /admins/{uid} {
@@ -220,24 +274,49 @@ service cloud.firestore {
       allow delete: if false;
 
       match /private/{configId} {
-        allow get: if isValidId(cartelId) && isValidId(configId) && configId == 'auth' && isCartelEditor(cartelId);
+        allow get: if isValidId(cartelId) &&
+          isValidId(configId) &&
+          configId in ['auth', 'discord'] &&
+          isCartelEditor(cartelId);
         allow list: if false;
         allow create: if isValidId(cartelId) &&
           isValidId(configId) &&
-          configId == 'auth' &&
-          isAdmin() &&
-          isValidAuthConfig(incoming()) &&
+          exists(/databases/$(database)/documents/cartels/$(cartelId)) &&
           incoming().updatedBy == request.auth.uid &&
           incoming().updatedAt == request.time &&
-          exists(/databases/$(database)/documents/cartels/$(cartelId));
+          (
+            (configId == 'auth' && isAdmin() && isValidAuthConfig(incoming())) ||
+            (configId == 'discord' && isCartelEditor(cartelId) && isValidDiscordConfig(incoming()))
+          );
         allow update: if isValidId(cartelId) &&
           isValidId(configId) &&
-          configId == 'auth' &&
           isCartelEditor(cartelId) &&
-          isValidAuthConfig(incoming()) &&
           incoming().updatedBy == request.auth.uid &&
           incoming().updatedAt == request.time &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['secretCode', 'updatedAt', 'updatedBy']);
+          (
+            (
+              configId == 'auth' &&
+              isValidAuthConfig(incoming()) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['secretCode', 'updatedAt', 'updatedBy'])
+            ) ||
+            (
+              configId == 'discord' &&
+              isValidDiscordConfig(incoming()) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'webhookUrl',
+                'autoEnabled',
+                'sendHour',
+                'sendMinute',
+                'includePhoto',
+                'customMessage',
+                'lastSentDate',
+                'lastSentAt',
+                'lastSentBy',
+                'updatedAt',
+                'updatedBy'
+              ])
+            )
+          );
         allow delete: if false;
       }
 
@@ -276,12 +355,12 @@ service cloud.firestore {
       match /state/{stateId} {
         allow get: if isValidId(cartelId) &&
           isValidId(stateId) &&
-          stateId in ['missions', 'inventory', 'treasury', 'hierarchy', 'catalog', 'album'] &&
+          stateId in ['missions', 'inventory', 'treasury', 'hierarchy', 'catalog', 'album', 'history'] &&
           (isAdmin() || isCartelMember(cartelId));
         allow list: if false;
         allow create: if isValidId(cartelId) &&
           isValidId(stateId) &&
-          stateId in ['missions', 'inventory', 'treasury', 'hierarchy', 'catalog', 'album'] &&
+          stateId in ['missions', 'inventory', 'treasury', 'hierarchy', 'catalog', 'album', 'history'] &&
           isCartelEditor(cartelId) &&
           isValidStateDoc(stateId, incoming()) &&
           incoming().updatedBy == request.auth.uid &&
@@ -289,7 +368,7 @@ service cloud.firestore {
           exists(/databases/$(database)/documents/cartels/$(cartelId));
         allow update: if isValidId(cartelId) &&
           isValidId(stateId) &&
-          stateId in ['missions', 'inventory', 'treasury', 'hierarchy', 'catalog', 'album'] &&
+          stateId in ['missions', 'inventory', 'treasury', 'hierarchy', 'catalog', 'album', 'history'] &&
           isCartelEditor(cartelId) &&
           isValidStateDoc(stateId, incoming()) &&
           incoming().updatedBy == request.auth.uid &&

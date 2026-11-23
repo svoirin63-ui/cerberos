@@ -46,11 +46,17 @@ import type {
   CatalogItemCategory,
   CatalogTradeType,
   GearKey,
+  InventoryPrices,
   InventoryStock,
   RewardStocks,
   TreasuryMoney,
 } from '@/src/types/cartel';
-import { formatMoney, getCatalogStockKey } from '@/src/utils/finance';
+import {
+  CATALOG_BUYBACK_ID_TO_REWARD_KEY,
+  formatMoney,
+  getCatalogStockKey,
+  resolveCatalogSellItemPrice,
+} from '@/src/utils/finance';
 
 const GROUP_FLYERS: Record<
   'marabunta' | 'brad' | 'eminence',
@@ -225,6 +231,7 @@ interface CatalogViewProps {
   onGoToOrdersWithGroup: (groupId: string) => void;
   onSaveCatalogGroups: (nextGroups: CatalogGroupsMap) => void;
   inventoryStock: InventoryStock;
+  inventoryPrices?: InventoryPrices;
   rewardStocks: RewardStocks;
   treasuryMoney: TreasuryMoney;
   readonly: boolean;
@@ -315,6 +322,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
   onGoToOrdersWithGroup,
   onSaveCatalogGroups,
   inventoryStock,
+  inventoryPrices,
   rewardStocks,
   treasuryMoney,
   readonly,
@@ -367,28 +375,40 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
   const [itLinkedGearKey, setItLinkedGearKey] = useState<GearKey | ''>('');
   const [itNotes, setItNotes] = useState('');
 
+  const resolveItemDisplayPrice = (item: CatalogItem): number => {
+    if (item.tradeType === 'sell') {
+      return resolveCatalogSellItemPrice(item, inventoryPrices);
+    }
+    const rewardKey = CATALOG_BUYBACK_ID_TO_REWARD_KEY[item.id];
+    if (rewardKey && rewardStocks[rewardKey]?.val !== undefined) {
+      return Math.max(0, Math.round(Number(rewardStocks[rewardKey].val) || 0));
+    }
+    return Math.max(0, Math.round(Number(item.price) || 0));
+  };
+
   const activeCart = useMemo(
     () => (activeGroup ? groupOrderCarts[activeGroup.id] || {} : {}),
     [activeGroup, groupOrderCarts]
   );
 
   const activeCartSummary = useMemo(() => {
-    if (!activeGroup) return { totalUnits: 0, totalCost: 0, lines: [] as Array<{ item: CatalogItem; qty: number; lineCost: number }> };
+    if (!activeGroup) return { totalUnits: 0, totalCost: 0, lines: [] as Array<{ item: CatalogItem; qty: number; unitPrice: number; lineCost: number }> };
     let totalUnits = 0;
     let totalCost = 0;
-    const lines: Array<{ item: CatalogItem; qty: number; lineCost: number }> = [];
+    const lines: Array<{ item: CatalogItem; qty: number; unitPrice: number; lineCost: number }> = [];
     activeGroup.items.forEach((item) => {
       if (item.tradeType !== 'sell') return;
       const qty = Math.max(0, Math.floor(Number(activeCart[item.id]) || 0));
       if (qty > 0) {
-        const lineCost = qty * Math.max(0, Number(item.price) || 0);
+        const unitPrice = resolveCatalogSellItemPrice(item, inventoryPrices);
+        const lineCost = qty * unitPrice;
         totalUnits += qty;
         totalCost += lineCost;
-        lines.push({ item, qty, lineCost });
+        lines.push({ item, qty, unitPrice, lineCost });
       }
     });
     return { totalUnits, totalCost, lines };
-  }, [activeGroup, activeCart]);
+  }, [activeGroup, activeCart, inventoryPrices]);
 
   const filteredItems = useMemo(() => {
     if (!activeGroup) return [];
@@ -546,7 +566,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
     setItName(it.name);
     setItTradeType(it.tradeType);
     setItCategory(it.category);
-    setItPrice(String(it.price || 0));
+    setItPrice(String(resolveItemDisplayPrice(it)));
     setItLinkedGearKey(it.linkedGearKey || '');
     setItNotes(it.notes || '');
     setItemFormOpen(true);
@@ -607,7 +627,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
       text += 'Aucun article sélectionné.\n';
     } else {
       activeCartSummary.lines.forEach((l) => {
-        text += `- ${l.qty}x ${l.item.name} (${formatMoney(l.item.price)}/u) = ${formatMoney(l.lineCost)}\n`;
+        text += `- ${l.qty}x ${l.item.name} (${formatMoney(l.unitPrice)}/u) = ${formatMoney(l.lineCost)}\n`;
       });
       text += `\nTotal articles : ${activeCartSummary.totalUnits}\n`;
       text += `TOTAL À RÉGLER : ${formatMoney(activeCartSummary.totalCost)}\n`;
@@ -1324,6 +1344,8 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                 group={activeGroup}
                 cart={activeCart}
                 inventoryStock={inventoryStock}
+                inventoryPrices={inventoryPrices}
+                rewardStocks={rewardStocks}
                 onAdjustItem={(itemId, delta) =>
                   onAdjustGroupOrderItem(activeGroup.id, itemId, delta)
                 }
@@ -1458,6 +1480,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
 
                   const itemVisual = getItemShowcaseImage(item, activeGroup);
                   const visualKey = `it_img_${item.id}`;
+                  const effectivePrice = resolveItemDisplayPrice(item);
 
                   return (
                     <div
@@ -1519,14 +1542,14 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                             </h4>
                             <span
                               className={`font-mono text-sm font-extrabold tabular-nums shrink-0 ${
-                                item.price > 0
+                                effectivePrice > 0
                                   ? isSell
                                     ? 'text-gold'
                                     : 'text-emerald-300'
                                   : 'text-amber-300 text-xs'
                               }`}
                             >
-                              {item.price > 0 ? formatMoney(item.price) : 'À fixer'}
+                              {effectivePrice > 0 ? formatMoney(effectivePrice) : 'À fixer'}
                             </span>
                           </div>
 
@@ -1541,7 +1564,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                           )}
                           {!isSell && matchingLootQty !== undefined && matchingLootQty > 0 && (
                             <div className="text-[11px] font-mono text-emerald-300 tabular-nums pt-0.5">
-                              En coffre : <strong>{matchingLootQty}</strong> ({formatMoney(matchingLootQty * item.price)})
+                              En coffre : <strong>{matchingLootQty}</strong> ({formatMoney(matchingLootQty * effectivePrice)})
                             </div>
                           )}
                         </div>

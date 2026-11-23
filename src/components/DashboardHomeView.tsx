@@ -2,15 +2,19 @@ import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
+  Banknote,
   BookOpen,
   Calendar,
   Camera,
   CheckCircle2,
   Clock,
   Crosshair,
+  ExternalLink,
   Gem,
+  Globe,
   Image as ImageIcon,
   KeyRound,
+  Newspaper,
   Package,
   Shield,
   ShoppingCart,
@@ -97,6 +101,7 @@ interface DashboardHomeViewProps {
   ) => void;
   onOpenCatalog: (groupId?: string) => void;
   onGoToOrdersWithGroup: (groupId: string) => void;
+  onOpenGazette: () => void;
 }
 
 interface DashboardPhotoProps {
@@ -145,7 +150,7 @@ const PARTNER_VISUALS: Record<string, { img: string; label: string }> = {
     img: eminenceHeroImg,
     label: 'Éminences — Clés, Packs de Braquage & Whiskey',
   },
-  brad: {
+  brad_recel: {
     img: bradHeroImg,
     label: 'Brad — Rachat Marché Noir & Objets Volés',
   },
@@ -168,6 +173,7 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
   onOpenMissionValidation,
   onOpenCatalog,
   onGoToOrdersWithGroup,
+  onOpenGazette,
 }) => {
   const effectiveSchedule = useMemo(
     () => getEffectiveSchedule(missionStates, scheduleMeta),
@@ -217,11 +223,11 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
   }, [supplyPlan]);
 
   const lootSummary = useMemo(() => {
-    const whiskeyItem = REWARD_ITEMS.find((r) => r.key === 'whiskey');
-    const whiskeyQty = Math.max(0, Number(rewardStocks.whiskey?.qty) || 0);
+    const whiskeyItem = REWARD_ITEMS.find((r) => r.key === 'whiskey_luxe');
+    const whiskeyQty = Math.max(0, Number(rewardStocks.whiskey_luxe?.qty) || 0);
     const whiskeyUnitVal =
-      rewardStocks.whiskey?.val !== undefined
-        ? Math.max(0, Number(rewardStocks.whiskey.val) || 0)
+      rewardStocks.whiskey_luxe?.val !== undefined
+        ? Math.max(0, Number(rewardStocks.whiskey_luxe.val) || 0)
         : whiskeyItem?.defaultVal || 15;
     const whiskeyValue = whiskeyQty * whiskeyUnitVal;
 
@@ -245,8 +251,8 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
       totalWeaponsCount += Math.max(0, Math.floor(Number(w.qty) || 0));
     });
     const weaponsValue = calcWeaponsTotalValue(weaponsStock);
-    const vestsQty = Math.max(0, Math.floor(Number(inventoryStock.vest) || 0));
-    const vestsValue = vestsQty * getInventoryItemPrice('vest', inventoryPrices);
+    const vestsQty = Math.max(0, Math.floor(Number(inventoryStock.gilet) || 0));
+    const vestsValue = vestsQty * getInventoryItemPrice('gilet', inventoryPrices);
     const fullInventoryValue = calcInventoryTotalValue(
       inventoryStock,
       inventoryPrices,
@@ -269,8 +275,9 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
         weaponsStock,
         memberRankings,
         inventoryPrices,
+        catalogGroups,
       }).slice(0, 4),
-    [members, missionStates, weaponsStock, memberRankings, inventoryPrices]
+    [members, missionStates, weaponsStock, memberRankings, inventoryPrices, catalogGroups]
   );
 
   const weekProgressPct = useMemo(() => {
@@ -281,7 +288,7 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
   }, [kpis.successCount, kpis.failCount]);
 
   const partnerCards = useMemo(() => {
-    const orderedIds = ['marabunta', 'eminence', 'brad'];
+    const orderedIds = ['marabunta', 'eminence', 'brad_recel'];
     return orderedIds
       .map((id) => catalogGroups[id])
       .filter((g): g is NonNullable<typeof g> => Boolean(g));
@@ -410,6 +417,24 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
                   <ShoppingCart className="w-4 h-4 text-gold-light" />
                   Passer Commande
                 </button>
+                <a
+                  href="https://sunnycom.tech/feed"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-4 py-2.5 rounded-xl text-xs font-bold bg-emerald-950/75 hover:bg-emerald-900/80 text-emerald-200 hover:text-white border border-emerald-500/45 hover:border-emerald-400 transition inline-flex items-center gap-2 shadow-md"
+                >
+                  <Globe className="w-4 h-4 text-emerald-400" />
+                  SunnyCom · Feed RP
+                  <ExternalLink className="w-3.5 h-3.5 text-emerald-300/80" />
+                </a>
+                <button
+                  type="button"
+                  onClick={onOpenGazette}
+                  className="px-4 py-2.5 rounded-xl text-xs font-bold bg-crimson-dark/70 hover:bg-crimson text-gold-light hover:text-white border border-gold/45 hover:border-gold transition inline-flex items-center gap-2 shadow-md cursor-pointer"
+                >
+                  <Newspaper className="w-4 h-4 text-gold" />
+                  Gazette Discord
+                </button>
               </div>
             </div>
           </div>
@@ -446,6 +471,25 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
                 </div>
                 <p className="text-[11px] text-zinc-300 mt-0.5">
                   {kpis.rewardsItemCount} objet{kpis.rewardsItemCount > 1 ? 's' : ''} en attente dans la Trésorerie.
+                </p>
+              </button>
+            )}
+
+            {isSundayToday && (
+              <button
+                type="button"
+                onClick={() => onNavigateTab('history')}
+                className="w-full text-left rounded-xl bg-emerald-950/35 border border-emerald-500/45 hover:border-emerald-400 px-3.5 py-2.5 transition cursor-pointer"
+              >
+                <div className="flex items-center justify-between gap-2 text-xs font-bold text-emerald-300">
+                  <span className="inline-flex items-center gap-1.5">
+                    <Banknote className="w-3.5 h-3.5" />
+                    Jour de Paye — Dimanche (70% / 30%)
+                  </span>
+                  <span className="font-mono tabular-nums">Ouvrir →</span>
+                </div>
+                <p className="text-[11px] text-zinc-300 mt-0.5">
+                  Répartir 30% des bénéfices aux membres et archiver la semaine.
                 </p>
               </button>
             )}
@@ -676,7 +720,14 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
               className="flex-1 py-2 px-3 rounded-xl text-xs font-bold bg-gold/15 hover:bg-gold hover:text-obsidian text-gold-light border border-gold/45 transition flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <Gem className="w-3.5 h-3.5" />
-              Ouvrir la Trésorerie
+              Trésorerie
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigateTab('history')}
+              className="py-2 px-3 rounded-xl text-xs font-semibold bg-obsidian hover:bg-slateDark text-emerald-300 border border-emerald-500/35 hover:border-emerald-400 transition cursor-pointer whitespace-nowrap"
+            >
+              Paye 70/30
             </button>
             <button
               type="button"
@@ -877,7 +928,7 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
           {/* Rappel rapide items standards critiques */}
           <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-bronze/30 text-[11px] text-zinc-400">
             <span>
-              Packs planifiés en stock :{' '}
+              Équipement &amp; munitions en stock :{' '}
               <strong className="text-zinc-200 tabular-nums">
                 {INVENTORY_ITEMS.reduce(
                   (sum, it) => sum + Math.max(0, Number(inventoryStock[it.key]) || 0),

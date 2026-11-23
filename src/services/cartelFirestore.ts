@@ -4,6 +4,7 @@ import {
   doc,
   getDoc,
   onSnapshot,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -35,9 +36,13 @@ import type {
   CatalogItem,
   CatalogItemCategory,
   CatalogTradeType,
+  CurrentWeekPayrollState,
+  DiscordGazetteConfig,
   DistinctionKey,
   GearKey,
   HierarchyMember,
+  HierarchyUnitKey,
+  HistoryState,
   InventoryPrices,
   InventoryStock,
   LostWeaponRecord,
@@ -46,11 +51,17 @@ import type {
   MissionScheduleMeta,
   MissionStateEntry,
   MissionStates,
+  PayrollBasis,
+  PayrollMemberRow,
   RewardStockEntry,
   RewardStocks,
   TreasuryMoney,
   WeaponEntry,
   WeaponsStock,
+  WeeklyArchiveDayRow,
+  WeeklyArchiveMissionRow,
+  WeeklyArchivePayrollSnapshot,
+  WeeklyArchiveRecord,
 } from '@/src/types/cartel';
 import { currentWeekStart, isoDate } from '@/src/utils/finance';
 
@@ -136,6 +147,11 @@ function sanitizeMissionEntry(value: MissionStateEntry): MissionStateEntry {
     usedGear: cleanUsedGear,
     loot: cleanLoot,
     lostWeapons: cleanLostWeapons,
+    cashLossDebitAccount:
+      value.cashLossDebitAccount === 'legal' || value.cashLossDebitAccount === 'illegal'
+        ? value.cashLossDebitAccount
+        : 'none',
+    cashLossDebitAmount: Math.max(0, Math.round(Number(value.cashLossDebitAmount) || 0)),
   };
 }
 
@@ -477,6 +493,252 @@ export function sanitizeAlbumState(raw: unknown): AlbumState {
   return { photos, favorites };
 }
 
+const VALID_HIERARCHY_UNITS = new Set<HierarchyUnitKey>([
+  'mando',
+  'ojos',
+  'bocas',
+  'brazos',
+  'cerebros',
+  'cerberos',
+]);
+
+export function createDefaultCurrentPayroll(week?: string): CurrentWeekPayrollState {
+  const validWeek =
+    typeof week === 'string' && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(week)
+      ? week
+      : isoDate(currentWeekStart());
+  return {
+    week: validWeek,
+    cartelPercent: 70,
+    membersPercent: 30,
+    basis: 'net_cartel',
+    paidMemberIds: [],
+    settled: false,
+    settledAt: '',
+    settledBy: '',
+    settledAmount: 0,
+    debitAccount: 'none',
+    debitAmount: 0,
+  };
+}
+
+export const DEFAULT_HISTORY_STATE: HistoryState = {
+  archives: {},
+  currentPayroll: createDefaultCurrentPayroll(),
+};
+
+function sanitizeCurrentPayroll(raw: unknown): CurrentWeekPayrollState {
+  const fallback = createDefaultCurrentPayroll();
+  if (!raw || typeof raw !== 'object') return fallback;
+  const obj = raw as Record<string, unknown>;
+  const week =
+    typeof obj.week === 'string' && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(obj.week)
+      ? obj.week
+      : fallback.week;
+  const rawCartel = Number(obj.cartelPercent);
+  const cartelPercent = Number.isFinite(rawCartel)
+    ? Math.max(0, Math.min(100, Math.round(rawCartel)))
+    : 70;
+  const membersPercent = 100 - cartelPercent;
+  const basis: PayrollBasis = obj.basis === 'net_member' ? 'net_member' : 'net_cartel';
+  const paidMemberIds = Array.isArray(obj.paidMemberIds)
+    ? Array.from(
+        new Set(
+          obj.paidMemberIds
+            .filter((id): id is string => typeof id === 'string')
+            .map((id) => id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64))
+            .filter(Boolean)
+        )
+      ).slice(0, 100)
+    : [];
+  const debitAccount =
+    obj.debitAccount === 'legal' || obj.debitAccount === 'illegal' ? obj.debitAccount : 'none';
+
+  return {
+    week,
+    cartelPercent,
+    membersPercent,
+    basis,
+    paidMemberIds,
+    settled: Boolean(obj.settled),
+    settledAt: typeof obj.settledAt === 'string' ? obj.settledAt.slice(0, 40) : '',
+    settledBy: typeof obj.settledBy === 'string' ? obj.settledBy.slice(0, 80) : '',
+    settledAmount: Math.max(0, Math.round(Number(obj.settledAmount) || 0)),
+    debitAccount,
+    debitAmount:
+      debitAccount !== 'none' ? Math.max(0, Math.round(Number(obj.debitAmount) || 0)) : 0,
+  };
+}
+
+function sanitizePayrollMemberRows(raw: unknown): PayrollMemberRow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((r): r is Record<string, unknown> => Boolean(r && typeof r === 'object'))
+    .slice(0, 100)
+    .map((r) => {
+      const memberId =
+        typeof r.memberId === 'string'
+          ? r.memberId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64)
+          : '';
+      const unit: HierarchyUnitKey =
+        typeof r.unit === 'string' && VALID_HIERARCHY_UNITS.has(r.unit as HierarchyUnitKey)
+          ? (r.unit as HierarchyUnitKey)
+          : 'cerberos';
+      return {
+        memberId: memberId || 'unknown',
+        memberName:
+          typeof r.memberName === 'string' && r.memberName.trim()
+            ? r.memberName.trim().slice(0, 80)
+            : 'Membre',
+        unit,
+        missionsOk: Math.max(0, Math.floor(Number(r.missionsOk) || 0)),
+        missionsKo: Math.max(0, Math.floor(Number(r.missionsKo) || 0)),
+        heistsOk: Math.max(0, Math.floor(Number(r.heistsOk) || 0)),
+        grossRevenue: Math.max(0, Math.round(Number(r.grossRevenue) || 0)),
+        materialCostShare: Math.max(0, Math.round(Number(r.materialCostShare) || 0)),
+        lossShare: Math.max(0, Math.round(Number(r.lossShare) || 0)),
+        netContribution: Math.round(Number(r.netContribution) || 0),
+        sharePercent: Math.max(0, Math.min(100, Number(r.sharePercent) || 0)),
+        payrollAmount: Math.max(0, Math.round(Number(r.payrollAmount) || 0)),
+        paid: Boolean(r.paid),
+      };
+    });
+}
+
+export function sanitizeHistoryState(raw: unknown): HistoryState {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      archives: {},
+      currentPayroll: createDefaultCurrentPayroll(),
+    };
+  }
+  const obj = raw as { archives?: unknown; currentPayroll?: unknown };
+  const archives: Record<string, WeeklyArchiveRecord> = {};
+
+  if (obj.archives && typeof obj.archives === 'object') {
+    Object.entries(obj.archives as Record<string, unknown>)
+      .slice(0, 60)
+      .forEach(([key, rawRecord]) => {
+        if (!rawRecord || typeof rawRecord !== 'object') return;
+        const rec = rawRecord as Record<string, unknown>;
+        const rawId = typeof rec.id === 'string' && rec.id.trim() ? rec.id : key;
+        const id = rawId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+        const week =
+          typeof rec.week === 'string' && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(rec.week)
+            ? rec.week
+            : '';
+        if (!id || !week) return;
+
+        const sumObj =
+          rec.summary && typeof rec.summary === 'object'
+            ? (rec.summary as Record<string, unknown>)
+            : {};
+
+        const dailyRows: WeeklyArchiveDayRow[] = Array.isArray(rec.dailyRows)
+          ? rec.dailyRows
+              .filter((d): d is Record<string, unknown> => Boolean(d && typeof d === 'object'))
+              .slice(0, 14)
+              .map((d) => ({
+                day: typeof d.day === 'string' ? d.day.slice(0, 20) : '',
+                dateLabel: typeof d.dateLabel === 'string' ? d.dateLabel.slice(0, 40) : '',
+                ok: Math.max(0, Math.floor(Number(d.ok) || 0)),
+                ko: Math.max(0, Math.floor(Number(d.ko) || 0)),
+                totalMissions: Math.max(0, Math.floor(Number(d.totalMissions) || 0)),
+                cost: Math.max(0, Math.round(Number(d.cost) || 0)),
+                extra: Math.max(0, Math.round(Number(d.extra) || 0)),
+                gains: Math.max(0, Math.round(Number(d.gains) || 0)),
+                net: Math.round(Number(d.net) || 0),
+              }))
+          : [];
+
+        const missions: WeeklyArchiveMissionRow[] = Array.isArray(rec.missions)
+          ? rec.missions
+              .filter((m): m is Record<string, unknown> => Boolean(m && typeof m === 'object'))
+              .slice(0, 60)
+              .map((m) => ({
+                id: typeof m.id === 'string' ? m.id.slice(0, 64) : '',
+                name: typeof m.name === 'string' ? m.name.slice(0, 80) : '',
+                day: typeof m.day === 'string' ? m.day.slice(0, 20) : '',
+                major: Boolean(m.major),
+                status: m.status === 'fail' ? 'fail' : 'success',
+                gain: Math.max(0, Math.round(Number(m.gain) || 0)),
+                cost: Math.max(0, Math.round(Number(m.cost) || 0)),
+                extra: Math.max(0, Math.round(Number(m.extra) || 0)),
+                net: Math.round(Number(m.net) || 0),
+                players: Array.isArray(m.players)
+                  ? m.players
+                      .filter((p): p is string => typeof p === 'string')
+                      .map((p) => p.slice(0, 80))
+                      .slice(0, 20)
+                  : [],
+              }))
+          : [];
+
+        const rawPay =
+          rec.payroll && typeof rec.payroll === 'object'
+            ? (rec.payroll as Record<string, unknown>)
+            : {};
+        const rawCartelPct = Number(rawPay.cartelPercent);
+        const cartelPercent = Number.isFinite(rawCartelPct)
+          ? Math.max(0, Math.min(100, Math.round(rawCartelPct)))
+          : 70;
+        const membersPercent = 100 - cartelPercent;
+        const debitAccount =
+          rawPay.debitAccount === 'legal' || rawPay.debitAccount === 'illegal'
+            ? rawPay.debitAccount
+            : 'none';
+
+        const payroll: WeeklyArchivePayrollSnapshot = {
+          cartelPercent,
+          membersPercent,
+          basis: rawPay.basis === 'net_member' ? 'net_member' : 'net_cartel',
+          distributableBase: Math.max(0, Math.round(Number(rawPay.distributableBase) || 0)),
+          cartelShareAmount: Math.round(Number(rawPay.cartelShareAmount) || 0),
+          payrollPoolAmount: Math.max(0, Math.round(Number(rawPay.payrollPoolAmount) || 0)),
+          unattributedNet: Math.round(Number(rawPay.unattributedNet) || 0),
+          settled: Boolean(rawPay.settled),
+          settledAt: typeof rawPay.settledAt === 'string' ? rawPay.settledAt.slice(0, 40) : '',
+          settledBy: typeof rawPay.settledBy === 'string' ? rawPay.settledBy.slice(0, 80) : '',
+          debitAccount,
+          debitAmount:
+            debitAccount !== 'none'
+              ? Math.max(0, Math.round(Number(rawPay.debitAmount) || 0))
+              : 0,
+          rows: sanitizePayrollMemberRows(rawPay.rows),
+        };
+
+        archives[id] = {
+          id,
+          week,
+          label: typeof rec.label === 'string' ? rec.label.slice(0, 80) : week,
+          archivedAt:
+            typeof rec.archivedAt === 'string'
+              ? rec.archivedAt.slice(0, 40)
+              : new Date().toISOString().slice(0, 40),
+          archivedBy: typeof rec.archivedBy === 'string' ? rec.archivedBy.slice(0, 80) : '',
+          summary: {
+            successCount: Math.max(0, Math.floor(Number(sumObj.successCount) || 0)),
+            failCount: Math.max(0, Math.floor(Number(sumObj.failCount) || 0)),
+            totalMissions: Math.max(0, Math.floor(Number(sumObj.totalMissions) || 0)),
+            grossGains: Math.max(0, Math.round(Number(sumObj.grossGains) || 0)),
+            materialCost: Math.max(0, Math.round(Number(sumObj.materialCost) || 0)),
+            missionLoss: Math.max(0, Math.round(Number(sumObj.missionLoss) || 0)),
+            weaponsLossAmount: Math.max(0, Math.round(Number(sumObj.weaponsLossAmount) || 0)),
+            netProfit: Math.round(Number(sumObj.netProfit) || 0),
+          },
+          dailyRows,
+          missions,
+          payroll,
+        };
+      });
+  }
+
+  return {
+    archives,
+    currentPayroll: sanitizeCurrentPayroll(obj.currentPayroll),
+  };
+}
+
 export async function bootstrapAndJoinCartel(
   user: User,
   seed: LocalSeedData
@@ -652,6 +914,26 @@ export async function bootstrapAndJoinCartel(
         handleFirestoreError(error, OperationType.CREATE, `cartels/${CARTEL_ID}/state/album`);
       }
     }
+
+    const historyRef = doc(db, 'cartels', CARTEL_ID, 'state', 'history');
+    let historySnap;
+    try {
+      historySnap = await getDoc(historyRef);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, `cartels/${CARTEL_ID}/state/history`);
+    }
+    if (!historySnap.exists()) {
+      try {
+        await setDoc(historyRef, {
+          archives: {},
+          currentPayroll: createDefaultCurrentPayroll(),
+          updatedAt: serverTimestamp(),
+          updatedBy: user.uid,
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `cartels/${CARTEL_ID}/state/history`);
+      }
+    }
   }
 
   let memberSnap;
@@ -700,6 +982,7 @@ export function subscribeCartelState(
     onMemberRankings?: (rankings: MemberRankingsMap) => void;
     onCatalog?: (groups: CatalogGroupsMap) => void;
     onAlbum?: (album: AlbumState) => void;
+    onHistory?: (history: HistoryState) => void;
     onRole: (role: MemberRole) => void;
     onError: (err: Error) => void;
   }
@@ -852,6 +1135,27 @@ export function subscribeCartelState(
     }
   );
 
+  const unsubHistory = onSnapshot(
+    doc(db, 'cartels', CARTEL_ID, 'state', 'history'),
+    (snap) => {
+      if (!snap.exists()) {
+        callbacks.onHistory?.({
+          archives: {},
+          currentPayroll: createDefaultCurrentPayroll(),
+        });
+        return;
+      }
+      callbacks.onHistory?.(sanitizeHistoryState(snap.data()));
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.GET, `cartels/${CARTEL_ID}/state/history`);
+      } catch (err) {
+        callbacks.onError(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+  );
+
   return () => {
     unsubMissions();
     unsubInventory();
@@ -860,6 +1164,7 @@ export function subscribeCartelState(
     unsubMember();
     unsubCatalog();
     unsubAlbum();
+    unsubHistory();
   };
 }
 
@@ -1129,6 +1434,30 @@ export async function saveInventoryItemPrice(
       updatedAt: serverTimestamp(),
       updatedBy: uid,
     });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function saveInventoryPricesBatch(
+  uid: string,
+  prices: Record<string, number>
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/state/inventory`;
+  const payload: Record<string, unknown> = {
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+  };
+  let count = 0;
+  Object.entries(prices).forEach(([key, price]) => {
+    const cleanKey = key.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
+    if (!cleanKey) return;
+    payload[`prices.${cleanKey}`] = Math.max(0, Math.round(Number(price) || 0));
+    count++;
+  });
+  if (count === 0) return;
+  try {
+    await updateDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'inventory'), payload);
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -1525,6 +1854,107 @@ export async function fetchAlbumMediaUrl(mediaId: string): Promise<string | null
   }
 }
 
+export async function saveHistoryState(
+  uid: string,
+  historyState: HistoryState
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/state/history`;
+  const clean = sanitizeHistoryState(historyState);
+  try {
+    await setDoc(doc(db, 'cartels', CARTEL_ID, 'state', 'history'), {
+      archives: clean.archives,
+      currentPayroll: clean.currentPayroll,
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function savePayrollSettlementWithTreasury(
+  uid: string,
+  historyState: HistoryState,
+  treasuryMoneyPatch?: Partial<TreasuryMoney>
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/state/history`;
+  const clean = sanitizeHistoryState(historyState);
+  const batch = writeBatch(db);
+
+  batch.set(doc(db, 'cartels', CARTEL_ID, 'state', 'history'), {
+    archives: clean.archives,
+    currentPayroll: clean.currentPayroll,
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+  });
+
+  if (
+    treasuryMoneyPatch &&
+    (treasuryMoneyPatch.legal !== undefined || treasuryMoneyPatch.illegal !== undefined)
+  ) {
+    const treasUpdate: Record<string, unknown> = {
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    };
+    if (treasuryMoneyPatch.legal !== undefined) {
+      treasUpdate.legal = Math.max(0, Math.round(Number(treasuryMoneyPatch.legal) || 0));
+    }
+    if (treasuryMoneyPatch.illegal !== undefined) {
+      treasUpdate.illegal = Math.max(0, Math.round(Number(treasuryMoneyPatch.illegal) || 0));
+    }
+    batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'treasury'), treasUpdate);
+  }
+
+  try {
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function archiveWeekAndResetMissions(
+  uid: string,
+  params: {
+    historyState: HistoryState;
+    nextWeek: string;
+    weaponsLossAmount: number;
+  }
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/state/history`;
+  const clean = sanitizeHistoryState(params.historyState);
+  const batch = writeBatch(db);
+
+  batch.set(doc(db, 'cartels', CARTEL_ID, 'state', 'history'), {
+    archives: clean.archives,
+    currentPayroll: clean.currentPayroll,
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+  });
+
+  batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'missions'), {
+    week: params.nextWeek,
+    entries: {},
+    scheduleOverrides: {},
+    unplacedMissionIds: [],
+    lastRecalcDate: '',
+    lastRecalcAt: '',
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+  });
+
+  batch.update(doc(db, 'cartels', CARTEL_ID, 'state', 'treasury'), {
+    weaponsLossAmount: Math.max(0, Math.round(Number(params.weaponsLossAmount) || 0)),
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+  });
+
+  try {
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
 export async function unlockEditorWithCode(
   user: User,
   code: string
@@ -1586,6 +2016,203 @@ export async function updateCartelSecretCode(
       secretCode: trimmed,
       updatedAt: serverTimestamp(),
       updatedBy: uid,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export const DISCORD_WEBHOOK_URL_REGEX =
+  /^https:\/\/(discord|discordapp)\.com\/api\/webhooks\/[0-9]+\/[A-Za-z0-9._-]+$/;
+
+export const DEFAULT_DISCORD_CONFIG: DiscordGazetteConfig = {
+  webhookUrl: '',
+  autoEnabled: false,
+  sendHour: 9,
+  sendMinute: 30,
+  includePhoto: true,
+  customMessage: '',
+  lastSentDate: '',
+  lastSentAt: '',
+  lastSentBy: '',
+};
+
+export function isValidDiscordWebhookUrl(raw: string): boolean {
+  const trimmed = raw.trim();
+  return trimmed.length > 0 && trimmed.length <= 300 && DISCORD_WEBHOOK_URL_REGEX.test(trimmed);
+}
+
+export function sanitizeDiscordConfig(raw: unknown): DiscordGazetteConfig {
+  if (!raw || typeof raw !== 'object') {
+    return { ...DEFAULT_DISCORD_CONFIG };
+  }
+  const obj = raw as Record<string, unknown>;
+  const rawWebhook = typeof obj.webhookUrl === 'string' ? obj.webhookUrl.trim().slice(0, 300) : '';
+  const webhookUrl = rawWebhook && DISCORD_WEBHOOK_URL_REGEX.test(rawWebhook) ? rawWebhook : '';
+
+  const rawHour = Number(obj.sendHour);
+  const sendHour = Number.isFinite(rawHour)
+    ? Math.max(0, Math.min(23, Math.trunc(rawHour)))
+    : 9;
+
+  const rawMinute = Number(obj.sendMinute);
+  const sendMinute = Number.isFinite(rawMinute)
+    ? Math.max(0, Math.min(59, Math.trunc(rawMinute)))
+    : 30;
+
+  const rawLastDate =
+    typeof obj.lastSentDate === 'string' ? obj.lastSentDate.trim().slice(0, 20) : '';
+  const lastSentDate = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(rawLastDate) ? rawLastDate : '';
+
+  return {
+    webhookUrl,
+    autoEnabled: Boolean(obj.autoEnabled),
+    sendHour,
+    sendMinute,
+    includePhoto: obj.includePhoto === undefined ? true : Boolean(obj.includePhoto),
+    customMessage:
+      typeof obj.customMessage === 'string' ? obj.customMessage.trim().slice(0, 300) : '',
+    lastSentDate,
+    lastSentAt: typeof obj.lastSentAt === 'string' ? obj.lastSentAt.trim().slice(0, 40) : '',
+    lastSentBy: typeof obj.lastSentBy === 'string' ? obj.lastSentBy.trim().slice(0, 80) : '',
+  };
+}
+
+export function subscribeDiscordConfig(callbacks: {
+  onConfig: (config: DiscordGazetteConfig) => void;
+  onError: (err: Error) => void;
+}): () => void {
+  const path = `cartels/${CARTEL_ID}/private/discord`;
+  return onSnapshot(
+    doc(db, 'cartels', CARTEL_ID, 'private', 'discord'),
+    (snap) => {
+      if (!snap.exists()) {
+        callbacks.onConfig({ ...DEFAULT_DISCORD_CONFIG });
+        return;
+      }
+      callbacks.onConfig(sanitizeDiscordConfig(snap.data()));
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.GET, path);
+      } catch (err) {
+        callbacks.onError(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+  );
+}
+
+export async function saveDiscordConfig(
+  uid: string,
+  config: DiscordGazetteConfig
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/private/discord`;
+  const clean = sanitizeDiscordConfig(config);
+  try {
+    await setDoc(doc(db, 'cartels', CARTEL_ID, 'private', 'discord'), {
+      ...clean,
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export interface ClaimDailyDispatchResult {
+  claimed: boolean;
+  config?: DiscordGazetteConfig;
+  previousLastSentDate: string;
+  previousLastSentAt: string;
+  previousLastSentBy: string;
+}
+
+export async function claimDailyDiscordDispatch(
+  uid: string,
+  todayIso: string,
+  senderName: string,
+  allowServerFallback = false
+): Promise<ClaimDailyDispatchResult> {
+  const path = `cartels/${CARTEL_ID}/private/discord`;
+  const ref = doc(db, 'cartels', CARTEL_ID, 'private', 'discord');
+  const cleanSender = sanitizeDisplayName(senderName).slice(0, 80);
+
+  try {
+    return await runTransaction(db, async (tx) => {
+      const snap = await tx.get(ref);
+      const current = snap.exists()
+        ? sanitizeDiscordConfig(snap.data())
+        : { ...DEFAULT_DISCORD_CONFIG };
+      const hasWebhook =
+        isValidDiscordWebhookUrl(current.webhookUrl) || Boolean(allowServerFallback);
+      if (!current.autoEnabled || !hasWebhook || current.lastSentDate === todayIso) {
+        return {
+          claimed: false,
+          previousLastSentDate: current.lastSentDate,
+          previousLastSentAt: current.lastSentAt,
+          previousLastSentBy: current.lastSentBy,
+        };
+      }
+
+      const nowIso = new Date().toISOString().slice(0, 40);
+      const next: DiscordGazetteConfig = {
+        ...current,
+        lastSentDate: todayIso,
+        lastSentAt: nowIso,
+        lastSentBy: cleanSender,
+      };
+      if (snap.exists()) {
+        tx.update(ref, {
+          ...next,
+          updatedAt: serverTimestamp(),
+          updatedBy: uid,
+        });
+      } else {
+        tx.set(ref, {
+          ...next,
+          updatedAt: serverTimestamp(),
+          updatedBy: uid,
+        });
+      }
+
+      return {
+        claimed: true,
+        config: next,
+        previousLastSentDate: current.lastSentDate,
+        previousLastSentAt: current.lastSentAt,
+        previousLastSentBy: current.lastSentBy,
+      };
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function rollbackDailyDiscordDispatch(
+  uid: string,
+  expectedTodayIso: string,
+  previous: {
+    lastSentDate: string;
+    lastSentAt: string;
+    lastSentBy: string;
+  }
+): Promise<void> {
+  const path = `cartels/${CARTEL_ID}/private/discord`;
+  const ref = doc(db, 'cartels', CARTEL_ID, 'private', 'discord');
+  try {
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists()) return;
+      const current = sanitizeDiscordConfig(snap.data());
+      if (current.lastSentDate !== expectedTodayIso) return;
+      tx.update(ref, {
+        ...current,
+        lastSentDate: previous.lastSentDate,
+        lastSentAt: previous.lastSentAt,
+        lastSentBy: previous.lastSentBy,
+        updatedAt: serverTimestamp(),
+        updatedBy: uid,
+      });
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);

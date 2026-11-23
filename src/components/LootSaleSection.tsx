@@ -547,7 +547,7 @@ export const LootSaleSection: React.FC<LootSaleSectionProps> = ({
                 </span>
               </div>
               <p className="text-xs text-zinc-400 mt-0.5">
-                Le Whiskey se revend auprès d&apos;Éminences (15 $ / bouteille), un contact séparé du receleur classique : validez sa vente ici (montant ajustable si besoin) pour créditer directement l&apos;Argent Sale.
+                Le Whiskey se revend auprès d&apos;Éminences ({formatMoney(whiskeyUnitVal)} / bouteille), un contact séparé du receleur classique : validez sa vente ici (montant ajustable si besoin) pour créditer directement l&apos;Argent Sale.
               </p>
             </div>
             <div className="text-right">

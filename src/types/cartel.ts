@@ -69,6 +69,8 @@ export interface MissionStateEntry {
   usedGear?: Record<string, number>;
   loot?: Record<string, number>;
   lostWeapons?: LostWeaponRecord[];
+  cashLossDebitAccount?: 'none' | 'legal' | 'illegal';
+  cashLossDebitAmount?: number;
 }
 
 export type MissionTypeKey =
@@ -272,6 +274,117 @@ export interface AlbumState {
   favorites: string[];
 }
 
+export interface DiscordGazetteConfig {
+  webhookUrl: string;
+  autoEnabled: boolean;
+  sendHour: number;
+  sendMinute: number;
+  includePhoto: boolean;
+  customMessage: string;
+  lastSentDate: string;
+  lastSentAt: string;
+  lastSentBy: string;
+}
+
+export type PayrollBasis = 'net_cartel' | 'net_member';
+
+export interface CurrentWeekPayrollState {
+  week: string;
+  cartelPercent: number;
+  membersPercent: number;
+  basis: PayrollBasis;
+  paidMemberIds: string[];
+  settled: boolean;
+  settledAt: string;
+  settledBy: string;
+  settledAmount: number;
+  debitAccount: 'none' | 'legal' | 'illegal';
+  debitAmount: number;
+}
+
+export interface PayrollMemberRow {
+  memberId: string;
+  memberName: string;
+  unit: HierarchyUnitKey;
+  missionsOk: number;
+  missionsKo: number;
+  heistsOk: number;
+  grossRevenue: number;
+  materialCostShare: number;
+  lossShare: number;
+  netContribution: number;
+  sharePercent: number;
+  payrollAmount: number;
+  paid: boolean;
+}
+
+export interface WeeklyArchiveDayRow {
+  day: string;
+  dateLabel: string;
+  ok: number;
+  ko: number;
+  totalMissions: number;
+  cost: number;
+  extra: number;
+  gains: number;
+  net: number;
+}
+
+export interface WeeklyArchiveMissionRow {
+  id: string;
+  name: string;
+  day: string;
+  major: boolean;
+  status: 'success' | 'fail';
+  gain: number;
+  cost: number;
+  extra: number;
+  net: number;
+  players: string[];
+}
+
+export interface WeeklyArchivePayrollSnapshot {
+  cartelPercent: number;
+  membersPercent: number;
+  basis: PayrollBasis;
+  distributableBase: number;
+  cartelShareAmount: number;
+  payrollPoolAmount: number;
+  unattributedNet: number;
+  settled: boolean;
+  settledAt: string;
+  settledBy: string;
+  debitAccount: 'none' | 'legal' | 'illegal';
+  debitAmount: number;
+  rows: PayrollMemberRow[];
+}
+
+export interface WeeklyArchiveRecord {
+  id: string;
+  week: string;
+  label: string;
+  archivedAt: string;
+  archivedBy: string;
+  summary: {
+    successCount: number;
+    failCount: number;
+    totalMissions: number;
+    grossGains: number;
+    materialCost: number;
+    missionLoss: number;
+    weaponsLossAmount: number;
+    netProfit: number;
+  };
+  dailyRows: WeeklyArchiveDayRow[];
+  missions: WeeklyArchiveMissionRow[];
+  payroll: WeeklyArchivePayrollSnapshot;
+}
+
+export interface HistoryState {
+  archives: Record<string, WeeklyArchiveRecord>;
+  currentPayroll: CurrentWeekPayrollState;
+}
+
 export type TabKey =
   | 'home'
   | 'planning'
@@ -280,6 +393,7 @@ export type TabKey =
   | 'catalog'
   | 'treasury'
   | 'accounting'
+  | 'history'
   | 'ranking'
   | 'hierarchy'
   | 'album';
